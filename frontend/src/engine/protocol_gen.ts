@@ -194,12 +194,6 @@ export type BrushLoadReq = { name: string, };
 
 export type BrushNodePreviewReq = { node_id: string, };
 
-export type InputValue = boolean | number | number | string | Array<[number, number]> | [number, number] | [number, number, number, number];
-
-export type PortDir = "Input" | "Output";
-
-export type BrushWireType = "Scalar" | "Int" | "Bool" | "Vec2" | "Vec4" | "Enum" | "String" | "Curve";
-
 export type PortDef = { name: string, dir: PortDir, wire_type: BrushWireType, 
 /**
  * Slider min when the port is disconnected (UI metadata only).
@@ -392,6 +386,12 @@ preview_image: boolean,
  */
 source: boolean, };
 
+export type InputValue = boolean | number | number | string | Array<[number, number]> | [number, number] | [number, number, number, number];
+
+export type PortDir = "Input" | "Output";
+
+export type BrushWireType = "Scalar" | "Int" | "Bool" | "Vec2" | "Vec4" | "Enum" | "String" | "Curve";
+
 export type PreviewStaging = { 
 /**
  * Iconify glyph shown in the dab slot, where a single stationary sample
@@ -483,6 +483,35 @@ export type CanvasDimensionsResp = { width: number, height: number, };
 
 export type CanvasRectResp = { origin_x: number, origin_y: number, width: number, height: number, };
 
+export type CaptureKind = "camera" | "display" | "stream";
+
+export type VoidSource = { "kind": "procedural" } | { "kind": "capture", capture: CaptureKind, } | { "kind": "image" };
+
+export type ParamInfo = { kind: string, name: string, 
+/**
+ * Display label. `None` → the UI title-cases `name`.
+ */
+label: string | null, description: string | null, 
+/**
+ * How to render this parameter's editor. One closed set, which both
+ * `ParamKind` and the settings schema's `WidgetHint` map into:
+ * `"auto"`, `"numberInput"`, `"icon"`, `"hotkey"`, `"color"`, `"hidden"`.
+ */
+widget: string, unit: UnitType, min: number | null, max: number | null, default: ParamValue, value: ParamValue | null, 
+/**
+ * Enum: `["Label1", "Label2", ...]`.
+ * Icon: `[["fa6-solid:icon-name", "Label"], ...]`.
+ */
+options: JsonValue | null, display: ParamDisplay, };
+
+export type ParamValue = boolean | number | number | string | Array<[number, number]> | [number, number, number, number, number] | [number, number, number] | [number, number] | Array<{ [key in string]: ParamValue }>;
+
+export type ParamDisplay = { min: string | null, max: string | null, default: string | null, 
+/**
+ * The unit suffix alone, for a column header. Empty for unitless values.
+ */
+unit: string, };
+
 export type CatalogEntry = { type: string, displayName: string, 
 /**
  * Iconify name, or `None` when the variant deliberately declares no icon
@@ -518,35 +547,6 @@ supportsPreview: boolean,
  * than sources of one.
  */
 source: VoidSource | null, };
-
-export type VoidSource = { "kind": "procedural" } | { "kind": "capture", capture: CaptureKind, } | { "kind": "image" };
-
-export type CaptureKind = "camera" | "display" | "stream";
-
-export type ParamInfo = { kind: string, name: string, 
-/**
- * Display label. `None` → the UI title-cases `name`.
- */
-label: string | null, description: string | null, 
-/**
- * How to render this parameter's editor. One closed set, which both
- * `ParamKind` and the settings schema's `WidgetHint` map into:
- * `"auto"`, `"numberInput"`, `"icon"`, `"hotkey"`, `"color"`, `"hidden"`.
- */
-widget: string, unit: UnitType, min: number | null, max: number | null, default: ParamValue, value: ParamValue | null, 
-/**
- * Enum: `["Label1", "Label2", ...]`.
- * Icon: `[["fa6-solid:icon-name", "Label"], ...]`.
- */
-options: JsonValue | null, display: ParamDisplay, };
-
-export type ParamValue = boolean | number | number | string | Array<[number, number]> | [number, number, number, number, number] | [number, number, number] | [number, number] | Array<{ [key in string]: ParamValue }>;
-
-export type ParamDisplay = { min: string | null, max: string | null, default: string | null, 
-/**
- * The unit suffix alone, for a column header. Empty for unitless values.
- */
-unit: string, };
 
 export type Catalog = { id: string, title: string, description: string | null, icon: string | null, 
 /**
@@ -919,9 +919,13 @@ export type SetVectorObjectsReq = { id: number, objects: Array<VectorObjectSpec>
 
 export type VectorObjectSpec = { 
 /**
- * `rect` | `ellipse` | `circle` | `line` | `text`.
+ * `rect` | `ellipse` | `circle` | `line` | `path` | `text`.
  */
-kind: string, x: number, y: number, w: number, h: number, x2: number, y2: number, text: string | null, size: number | null, font_family: string | null, 
+kind: string, x: number, y: number, w: number, h: number, x2: number, y2: number, 
+/**
+ * `path` vertices; `closed` turns the polyline into a polygon.
+ */
+points: Array<[number, number]>, closed: boolean, text: string | null, size: number | null, font_family: string | null, 
 /**
  * `[r, g, b, a]` sRGB bytes.
  */

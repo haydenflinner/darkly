@@ -346,6 +346,12 @@ fn set_vector_objects_dispatch_replaces_and_returns_ids() {
                       "fill": [255, 0, 0, 255] },
                     { "kind": "text", "x": 40, "y": 50, "text": "hi",
                       "size": 20, "fill": [0, 0, 255, 255] },
+                    { "kind": "path",
+                      "points": [[0, 60], [30, 60], [30, 90]],
+                      "closed": true,
+                      "fill": [0, 255, 0, 128],
+                      "stroke": [0, 255, 0, 255], "strokeW": 2.0 },
+                    { "kind": "path", "points": [[5, 5]] },
                     { "kind": "bogus" },
                 ],
             }),
@@ -353,7 +359,11 @@ fn set_vector_objects_dispatch_replaces_and_returns_ids() {
         )
         .expect("set_vector_objects dispatch");
     let ids = resp.value["ids"].as_array().unwrap();
-    assert_eq!(ids.len(), 2, "the unknown kind is skipped, not fatal");
+    assert_eq!(
+        ids.len(),
+        3,
+        "unknown kind and sub-2-point path are skipped, not fatal"
+    );
 
     // The stamped ids hit-test: point inside the rect lands on id[0].
     let hit = reg
@@ -365,4 +375,15 @@ fn set_vector_objects_dispatch_replaces_and_returns_ids() {
         )
         .expect("hit_test dispatch");
     assert_eq!(hit.value["object"], ids[0]);
+
+    // The closed triangle hit-tests on its filled interior.
+    let hit = reg
+        .dispatch(
+            &mut engine,
+            "hit_test_vector_object",
+            json!({ "id": id, "x": 15, "y": 70 }),
+            &[],
+        )
+        .expect("hit_test dispatch");
+    assert_eq!(hit.value["object"], ids[2]);
 }

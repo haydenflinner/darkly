@@ -50,7 +50,7 @@ pub struct VoidTransformInfoResp {
 #[derive(Deserialize)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 pub struct VectorObjectSpec {
-    /// `rect` | `ellipse` | `circle` | `line` | `text`.
+    /// `rect` | `ellipse` | `circle` | `line` | `path` | `text`.
     pub kind: String,
     #[serde(default)]
     pub x: f64,
@@ -64,6 +64,11 @@ pub struct VectorObjectSpec {
     pub x2: f64,
     #[serde(default)]
     pub y2: f64,
+    /// `path` vertices; `closed` turns the polyline into a polygon.
+    #[serde(default)]
+    pub points: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub closed: bool,
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
@@ -118,6 +123,24 @@ fn spec_to_object(spec: &VectorObjectSpec) -> Option<VectorObject> {
             None,
             spec.stroke.map(|c| (c, spec.stroke_w.unwrap_or(1.0))),
         ),
+        "path" => {
+            if spec.points.len() < 2 {
+                return None;
+            }
+            let mut path = kurbo::BezPath::new();
+            path.move_to((spec.points[0][0], spec.points[0][1]));
+            for p in &spec.points[1..] {
+                path.line_to((p[0], p[1]));
+            }
+            if spec.closed {
+                path.close_path();
+            }
+            (
+                path,
+                spec.fill,
+                spec.stroke.map(|c| (c, spec.stroke_w.unwrap_or(1.0))),
+            )
+        }
         "text" => {
             let mut props = TextProps::new(spec.text.clone().unwrap_or_default());
             if let Some(f) = &spec.font_family {
