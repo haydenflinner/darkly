@@ -352,6 +352,12 @@ fn set_vector_objects_dispatch_replaces_and_returns_ids() {
                       "fill": [0, 255, 0, 128],
                       "stroke": [0, 255, 0, 255], "strokeW": 2.0 },
                     { "kind": "path", "points": [[5, 5]] },
+                    { "kind": "image", "x": 50, "y": 0, "w": 4, "h": 2,
+                      "px_w": 4, "px_h": 2,
+                      "data": base64::engine::Engine::encode(
+                          &base64::engine::general_purpose::STANDARD,
+                          vec![255u8; 4 * 2 * 4]) },
+                    { "kind": "image", "data": "AAAA" },
                     { "kind": "bogus" },
                 ],
             }),
@@ -361,8 +367,8 @@ fn set_vector_objects_dispatch_replaces_and_returns_ids() {
     let ids = resp.value["ids"].as_array().unwrap();
     assert_eq!(
         ids.len(),
-        3,
-        "unknown kind and sub-2-point path are skipped, not fatal"
+        4,
+        "unknown kind, sub-2-point path, and dimensionless image are skipped, not fatal"
     );
 
     // The stamped ids hit-test: point inside the rect lands on id[0].

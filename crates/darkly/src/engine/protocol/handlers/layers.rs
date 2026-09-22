@@ -50,7 +50,7 @@ pub struct VoidTransformInfoResp {
 #[derive(Deserialize)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 pub struct VectorObjectSpec {
-    /// `rect` | `ellipse` | `circle` | `line` | `path` | `text`.
+    /// `rect` | `ellipse` | `circle` | `line` | `path` | `text` | `image`.
     pub kind: String,
     #[serde(default)]
     pub x: f64,
@@ -69,6 +69,14 @@ pub struct VectorObjectSpec {
     pub points: Vec<[f64; 2]>,
     #[serde(default)]
     pub closed: bool,
+    /// `image`: base64 RGBA8 pixels, `px_w`/`px_h` the pixel dims. `x`,`y`,
+    /// `w`,`h` stay the display rect — the image is sampled into it.
+    #[serde(default)]
+    pub data: Option<String>,
+    #[serde(default)]
+    pub px_w: u32,
+    #[serde(default)]
+    pub px_h: u32,
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
@@ -140,6 +148,35 @@ fn spec_to_object(spec: &VectorObjectSpec) -> Option<VectorObject> {
                 spec.fill,
                 spec.stroke.map(|c| (c, spec.stroke_w.unwrap_or(1.0))),
             )
+        }
+        "image" => {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            let rgba = STANDARD.decode(spec.data.as_deref()?).ok()?;
+            if spec.px_w == 0
+                || spec.px_h == 0
+                || rgba.len() != (spec.px_w * spec.px_h * 4) as usize
+            {
+                return None;
+            }
+            let (pw, ph) = (spec.px_w as f64, spec.px_h as f64);
+            return Some(VectorObject {
+                id: ObjectId::UNASSIGNED,
+                // Natural-size path scaled down to the display rect: the
+                // image fill samples under the same transform.
+                transform: kurbo::Affine::translate((spec.x, spec.y))
+                    * kurbo::Affine::scale_non_uniform(spec.w / pw, spec.h / ph),
+                fill: Some(peniko::Brush::Image(peniko::ImageBrush::new(
+                    peniko::ImageData {
+                        data: peniko::Blob::from(rgba),
+                        format: peniko::ImageFormat::Rgba8,
+                        alpha_type: peniko::ImageAlphaType::Alpha,
+                        width: spec.px_w,
+                        height: spec.px_h,
+                    },
+                ))),
+                stroke: None,
+                source: ObjectSource::Path(kurbo::Rect::new(0.0, 0.0, pw, ph).to_path(0.1)),
+            });
         }
         "text" => {
             let mut props = TextProps::new(spec.text.clone().unwrap_or_default());
