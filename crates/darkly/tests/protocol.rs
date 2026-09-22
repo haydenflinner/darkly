@@ -319,3 +319,50 @@ fn poll_recording_frame_reports_canvas_dims_when_empty() {
     assert!(resp.value["frame"].is_null());
     assert!(resp.bytes.is_none());
 }
+
+#[test]
+fn set_vector_objects_dispatch_replaces_and_returns_ids() {
+    let reg = RequestRegistry::new();
+    let mut engine = test_engine(64, 64);
+    // add_text creates a vector layer seeded with one object.
+    let resp = reg
+        .dispatch(
+            &mut engine,
+            "add_text",
+            json!({ "content": "seed", "x": 0, "y": 0, "anchor": -1 }),
+            &[],
+        )
+        .expect("add_text dispatch");
+    let id = resp.value["id"].as_u64().unwrap();
+
+    let resp = reg
+        .dispatch(
+            &mut engine,
+            "set_vector_objects",
+            json!({
+                "id": id,
+                "objects": [
+                    { "kind": "rect", "x": 10, "y": 10, "w": 20, "h": 20,
+                      "fill": [255, 0, 0, 255] },
+                    { "kind": "text", "x": 40, "y": 50, "text": "hi",
+                      "size": 20, "fill": [0, 0, 255, 255] },
+                    { "kind": "bogus" },
+                ],
+            }),
+            &[],
+        )
+        .expect("set_vector_objects dispatch");
+    let ids = resp.value["ids"].as_array().unwrap();
+    assert_eq!(ids.len(), 2, "the unknown kind is skipped, not fatal");
+
+    // The stamped ids hit-test: point inside the rect lands on id[0].
+    let hit = reg
+        .dispatch(
+            &mut engine,
+            "hit_test_vector_object",
+            json!({ "id": id, "x": 15, "y": 15 }),
+            &[],
+        )
+        .expect("hit_test dispatch");
+    assert_eq!(hit.value["object"], ids[0]);
+}
