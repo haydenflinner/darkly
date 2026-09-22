@@ -57,6 +57,9 @@ parley = { workspace = true }
 syn = { workspace = true }
 
 [dev-dependencies]
+# Tests build VectorObjects directly; the types are the crate's public fields.
+kurbo = { workspace = true }
+peniko = { workspace = true }
 pollster = "1.0"
 naga = { version = "29.0", features = ["wgsl-in"] }
 syn = { version = "3", features = ["visit", "full"] }

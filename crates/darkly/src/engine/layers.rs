@@ -329,6 +329,45 @@ impl DarklyEngine {
         Some(object_id)
     }
 
+    /// Replace a vector layer's whole object list in one undoable step — the
+    /// "host redraws this layer" path (a generated scene, a synced remote
+    /// layer), where per-object add/remove would spam undo and flicker.
+    /// Returns the ids stamped on the new objects (push order) so the caller
+    /// can map a [`Self::hit_test_vector_object`] result back to its own
+    /// records. `Err` for a missing or non-vector layer.
+    pub fn set_vector_objects(
+        &mut self,
+        layer_id: LayerId,
+        objects: Vec<crate::layer::VectorObject>,
+    ) -> Result<Vec<crate::layer::ObjectId>, String> {
+        let old = match self.doc.layer(layer_id) {
+            Some(Layer::Vector(v)) => v.objects.clone(),
+            _ => return Err(format!("layer {layer_id:?} is not a vector layer")),
+        };
+        let mut ids = Vec::with_capacity(objects.len());
+        match self.doc.find_node_mut(layer_id) {
+            Some(LayerNode::Layer(Layer::Vector(v))) => {
+                v.objects.clear();
+                for obj in objects {
+                    ids.push(v.push_object(obj));
+                }
+            }
+            _ => return Err(format!("layer {layer_id:?} is not a vector layer")),
+        }
+        let new = match self.doc.layer(layer_id) {
+            Some(Layer::Vector(v)) => v.objects.clone(),
+            _ => return Ok(ids),
+        };
+        self.push_undo(Box::new(PropertyAction::new(
+            layer_id,
+            Property::VectorObjects(old),
+            Property::VectorObjects(new),
+        )));
+        self.sync_vector_layer(layer_id);
+        self.compositor.mark_dirty();
+        Ok(ids)
+    }
+
     /// Ensure the compositor's GPU state for a vector layer exists and rebuild
     /// its `vello::Scene` from the document's authoritative objects. Idempotent:
     /// safe after any object/style/transform change, on load, and on

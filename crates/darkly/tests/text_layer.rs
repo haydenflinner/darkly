@@ -11,8 +11,9 @@ use darkly::engine::SavePurpose;
 use darkly::format::manifest::Manifest;
 use darkly::gpu::context::GpuContext;
 use darkly::gpu::test_utils::test_device;
-use darkly::layer::{TextAlign, TextLayout, TextProps, TextStyle};
+use darkly::layer::{ObjectSource, TextAlign, TextLayout, TextProps, TextStyle, VectorObject};
 use darkly::transform::Transform;
+use kurbo::{Affine, Shape};
 
 /// A genuine variable font (Cantarell-VF, CFF2, `wght` 100-800 axis) used as a
 /// non-fallback fixture: registering it proves upload, and embedding it proves
@@ -84,6 +85,56 @@ fn text_layer_realizes_glyph_coverage_then_undo_redo() {
     let _ = engine.test_readback_canvas();
     let after = covered_pixels(&engine.test_readback_layer(id));
     assert!(after > 0, "text re-realizes after redo (got {after})");
+}
+
+/// `set_vector_objects` swaps the whole object list in one undoable step:
+/// the seeded text is gone, the path object hit-tests, and one undo restores
+/// the seed — the "host redraws a generated layer" contract.
+#[test]
+fn set_vector_objects_replaces_and_undoes() {
+    let mut engine = test_engine(256, 128);
+    let (id, _seed) = engine.add_text_layer(
+        TextProps::new("seed".to_string()),
+        8.0,
+        8.0,
+        [255, 255, 255, 255],
+        None,
+    );
+    assert_eq!(engine.text_objects(id).len(), 1);
+
+    let obj = VectorObject {
+        id: darkly::layer::ObjectId::UNASSIGNED,
+        transform: Affine::IDENTITY,
+        fill: Some(peniko::Brush::Solid(peniko::Color::from_rgba8(
+            255, 255, 255, 255,
+        ))),
+        stroke: None,
+        source: ObjectSource::Path(kurbo::Rect::new(10.0, 10.0, 50.0, 40.0).to_path(0.1)),
+    };
+    engine
+        .set_vector_objects(id, vec![obj])
+        .expect("vector layer accepts a replacement list");
+
+    assert_eq!(engine.text_objects(id).len(), 0, "seed object replaced");
+    assert!(
+        engine.hit_test_vector_object(id, 30.0, 25.0).is_some(),
+        "replacement path hit-tests inside its bounds"
+    );
+    assert!(
+        engine.hit_test_vector_object(id, 90.0, 90.0).is_none(),
+        "outside the path misses"
+    );
+
+    engine.undo();
+    assert_eq!(
+        engine.text_objects(id).len(),
+        1,
+        "one undo restores the seed object"
+    );
+
+    // A raster layer refuses the swap.
+    let raster = engine.add_raster_layer(None);
+    assert!(engine.set_vector_objects(raster, vec![]).is_err());
 }
 
 #[test]
