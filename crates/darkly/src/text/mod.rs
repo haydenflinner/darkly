@@ -57,6 +57,11 @@ pub struct FontCapabilities {
 const BUNDLED_FONTS: &[&[u8]] = &[
     include_bytes!("../../resources/fonts/NotoSans-VF.ttf"),
     include_bytes!("../../resources/fonts/NotoSans-Italic-VF.ttf"),
+    // Symbols face — not a family users pick, but the fallback stack's
+    // coverage for geometric shapes/arrows/symbols (▶ ⏸ ✓ …) that Noto
+    // Sans lacks; without it wasm has no system font to rescue the
+    // glyph and it renders as tofu.
+    include_bytes!("../../resources/fonts/NotoSansSymbols2-Regular.ttf"),
 ];
 
 /// The platform-agnostic font collection plus parley's reusable layout state.
@@ -242,10 +247,14 @@ impl FontRegistry {
     }
 
     /// Shape + lay out a [`TextProps`] block into a positioned [`Layout`]. The
-    /// requested family falls back to the bundled Noto Sans then the generic
-    /// sans-serif, so a family the binary doesn't ship still renders.
+    /// requested family falls back to the bundled Noto Sans, then Noto Sans
+    /// Symbols 2 (shapes/arrows/dingbats), then the generic sans-serif, so a
+    /// family or glyph the binary doesn't ship still renders.
     pub fn shape(&mut self, text: &TextProps) -> Layout<()> {
-        let stack = format!("{}, Noto Sans, sans-serif", text.font_family);
+        let stack = format!(
+            "{}, Noto Sans, Noto Sans Symbols 2, sans-serif",
+            text.font_family
+        );
         let mut builder =
             self.layout_cx
                 .ranged_builder(&mut self.font_cx, &text.content, 1.0, true);

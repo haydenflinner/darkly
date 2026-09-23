@@ -12,5 +12,13 @@ platform; see `crates/darkly/src/text/mod.rs`.
 - **Source:** <https://github.com/notofonts/latin-greek-cyrillic>
 - **Full license text:** <https://openfontlicense.org/open-font-license-official-text/>
 
+## NotoSansSymbols2-Regular.ttf
+
+- **Family:** Noto Sans Symbols 2 (geometric shapes, arrows, dingbats — the
+  fallback-stack coverage for glyphs Noto Sans lacks)
+- **License:** SIL Open Font License, Version 1.1 (OFL-1.1)
+- **Copyright:** © The Noto Project Authors
+- **Source:** <https://github.com/notofonts/symbols>
+
 The OFL permits bundling and redistribution (including embedding) provided this
 attribution travels with the font and the font is not sold on its own.
