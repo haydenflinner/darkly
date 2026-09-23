@@ -136,7 +136,13 @@ export class Engine {
      *  counters that used to be separate borrowing reads). `busy` is true when a
      *  re-entrant render couldn't get the borrow, so caller must not reschedule. */
     render(timeSecs: number): FrameStatus {
-        const status = this.handle.render(timeSecs) as FrameStatus;
+        let status: FrameStatus;
+        try {
+            status = this.handle.render(timeSecs) as FrameStatus;
+        } catch (e) {
+            this.#rejectAllPending(e);
+            throw e;
+        }
         if (!status.busy && status.results) this.resolveResults(status.results);
         return status;
     }
@@ -168,13 +174,36 @@ export class Engine {
 
     private runScheduledDrain(): void {
         this.drainScheduled = false;
-        const out = this.handle.drain() as DrainResult;
+        let out: DrainResult;
+        try {
+            out = this.handle.drain() as DrainResult;
+        } catch (e) {
+            // A wedged wasm instance throws on every call. Fail every
+            // pending request instead of leaving their promises hanging —
+            // callers would otherwise await a dead transport forever.
+            this.#rejectAllPending(e);
+            reportEngineError(e);
+            return;
+        }
         if (out.busy) {
             // Render holds the borrow; try again on the next macrotask.
             this.armDrain();
             return;
         }
         if (out.results) this.resolveResults(out.results);
+    }
+
+    /// Reject every in-flight request with the same failure — used when the
+    /// engine itself is unreachable (wasm abort), where no request can ever
+    /// produce a result to resolve against.
+    #rejectAllPending(e: unknown): void {
+        if (this.pending.size === 0) return;
+        const err: EngineError = {
+            kind: 'engine_error',
+            message: e instanceof Error ? e.message : String(e),
+        };
+        for (const [, p] of this.pending) p.reject(err);
+        this.pending.clear();
     }
 
     private resolveResults(results: RawResult[]): void {
