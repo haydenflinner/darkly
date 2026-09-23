@@ -1546,6 +1546,15 @@ impl DarklyEngine {
         }
     }
 
+    /// Total bytes all in-flight readback requests will map. Guards the
+    /// thumbnail path: it must stay proportional to the thumbnail, never
+    /// the source texture — a canvas-scale full-texture readback OOMs
+    /// the wasm heap (`rust_oom` → `unreachable`, a dead engine).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_pending_readback_bytes(&self) -> usize {
+        self.readbacks.pending_mapped_bytes()
+    }
+
     /// Block on the GPU device only (fire map callbacks) WITHOUT
     /// polling or dispatching the readback scheduler. On native this
     /// stands in for the browser event loop that resolves buffer

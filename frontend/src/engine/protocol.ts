@@ -16,6 +16,9 @@ export interface EngineError {
 export function reportEngineError(e: unknown): void {
     const err = e as Partial<EngineError> | undefined;
     console.error('[engine] request failed:', err?.kind ?? 'error', err?.message ?? e);
+    // A raw exception (wasm trap, abort) carries the trapping frames only in
+    // `stack` — without it a wedged engine reports a bare `unreachable`.
+    if (!err?.kind && e instanceof Error && e.stack) console.error(e.stack);
 }
 
 /** The request surface of the engine: `send` (awaited) and `post`
@@ -174,6 +177,7 @@ export class Engine {
 
     private runScheduledDrain(): void {
         this.drainScheduled = false;
+        const hb = (globalThis as any).__darklyHeapProbe?.() ?? 0;
         let out: DrainResult;
         try {
             out = this.handle.drain() as DrainResult;
@@ -185,6 +189,8 @@ export class Engine {
             reportEngineError(e);
             return;
         }
+        const ha = (globalThis as any).__darklyHeapProbe?.() ?? hb;
+        if (ha - hb > 50e6) console.log(`[heap] drain +${((ha - hb) / 1e6) | 0}MB → ${(ha / 1e6) | 0}MB`);
         if (out.busy) {
             // Render holds the borrow; try again on the next macrotask.
             this.armDrain();

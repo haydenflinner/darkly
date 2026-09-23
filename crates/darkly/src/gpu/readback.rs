@@ -19,6 +19,18 @@
 /// Alignment required by wgpu for bytes_per_row in buffer↔texture copies.
 const COPY_ROW_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
 
+/// Maximum pixel bytes [`ReadbackScheduler::poll`] will copy out of mapped
+/// buffers in a single call.
+///
+/// Every extracted readback becomes a resident `Vec<u8>` — on wasm a copy of
+/// the mapped range inside the 4 GB linear-memory ceiling. Dozens of
+/// canvas-scale readbacks (e.g. undo regions for strokes that covered a
+/// ~100 MP bake window) can finish mapping in the same `device.poll` flush;
+/// extracting them all at once materialises gigabytes at once and aborts the
+/// engine with `rust_oom`. The budget paces extraction across frames: ready
+/// requests beyond it stay mapped and complete on later polls.
+pub const MAX_EXTRACT_BYTES_PER_POLL: usize = 64 << 20;
+
 // ---------------------------------------------------------------------------
 // ReadbackRequest - a single pending GPU→CPU copy
 // ---------------------------------------------------------------------------
@@ -34,6 +46,10 @@ pub struct ReadbackRequest {
     unpadded_row_bytes: u32,
     /// Receiver for the map_async callback.  `None` until `begin_mapping()`.
     rx: Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
+    /// Latched once the map callback fires. The channel is single-shot, so a
+    /// ready-but-not-yet-extracted request (held back by the per-poll byte
+    /// budget) must not depend on re-reading `rx`.
+    ready: bool,
 }
 
 /// Encode a `copy_texture_to_buffer` command for a texture region.
@@ -101,6 +117,74 @@ pub fn request_readback(
         padded_row_bytes,
         unpadded_row_bytes,
         rx: None,
+        ready: false,
+    }
+}
+
+/// Encode `rows` evenly-spaced single-row copies of `rect` into one buffer —
+/// a GPU-side nearest-row decimation for callers that downscale by sampling
+/// anyway (thumbnails). The mapped result is a `rect.width × rows` image
+/// where output row `i` is source row `i * rect.height / rows` — exactly the
+/// rows a nearest-neighbour downscaler would read. Copying the whole texture
+/// for a 36-px thumbnail allocates a staging buffer (and, on wasm, a second
+/// `Vec` copy of the mapped range) proportional to the full layer; a
+/// canvas-scale layer exhausts wasm linear memory and aborts the engine.
+pub fn request_readback_rows(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+    format: wgpu::TextureFormat,
+    rect: crate::coord::LayerRect,
+    rows: u32,
+) -> ReadbackRequest {
+    let x = rect.x0();
+    let w = rect.width;
+    let h = rect.height.max(1);
+    let rows = rows.clamp(1, h);
+    let bpp = format.block_copy_size(None).unwrap_or(1);
+    let unpadded_row_bytes = w * bpp;
+    let padded_row_bytes = unpadded_row_bytes.div_ceil(COPY_ROW_ALIGNMENT) * COPY_ROW_ALIGNMENT;
+    let buffer_size = padded_row_bytes as u64 * rows as u64;
+
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("readback-rows"),
+        size: buffer_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    for i in 0..rows {
+        let y = rect.y0() + i * h / rows;
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: i as u64 * padded_row_bytes as u64,
+                    bytes_per_row: Some(padded_row_bytes),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    ReadbackRequest {
+        buffer,
+        height: rows,
+        padded_row_bytes,
+        unpadded_row_bytes,
+        rx: None,
+        ready: false,
     }
 }
 
@@ -125,6 +209,7 @@ impl ReadbackRequest {
             padded_row_bytes,
             unpadded_row_bytes,
             rx: None,
+            ready: false,
         }
     }
 
@@ -168,6 +253,13 @@ impl ReadbackRequest {
         let data = self.extract_pixels(&slice);
         self.buffer.unmap();
         data
+    }
+
+    /// Bytes this request will map — padded rows × height. Tests assert
+    /// readbacks stay bounded independent of source texture size.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn mapped_len(&self) -> usize {
+        self.padded_row_bytes as usize * self.height as usize
     }
 
     /// Strip row padding and return tightly-packed pixel data.
@@ -240,30 +332,58 @@ impl<C> ReadbackScheduler<C> {
         }
 
         let mut completed = Vec::new();
+        let mut extracted_bytes = 0usize;
         let mut i = 0;
         while i < self.tasks.len() {
+            enum Step {
+                Extract,
+                Pending,
+                Failed,
+            }
             // Skip the device.poll inside ReadbackRequest::poll; we already
-            // did it above. Just check the channel directly.
-            let ready = self.tasks[i]
-                .0
-                .rx
-                .as_ref()
-                .and_then(|rx| rx.try_recv().ok());
+            // did it above. Just check the channel directly. The channel is
+            // single-shot: a delivered ready signal is latched on the request
+            // so a budget-deferred extraction still sees it next poll.
+            let step = {
+                let req = &mut self.tasks[i].0;
+                if req.ready {
+                    Step::Extract
+                } else {
+                    match req.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+                        Some(Ok(())) => {
+                            req.ready = true;
+                            Step::Extract
+                        }
+                        Some(Err(e)) => {
+                            log::error!("readback buffer mapping failed: {e}");
+                            Step::Failed
+                        }
+                        None => Step::Pending,
+                    }
+                }
+            };
 
-            match ready {
-                Some(Ok(())) => {
+            match step {
+                Step::Extract => {
+                    // Stop once the budget is spent — but always extract at
+                    // least one ready request per poll so a single oversized
+                    // readback can't starve behind it. Remaining ready tasks
+                    // keep their `ready` latch and complete on later polls.
+                    if extracted_bytes >= MAX_EXTRACT_BYTES_PER_POLL {
+                        break;
+                    }
                     let (req, ctx) = self.tasks.swap_remove(i);
                     let slice = req.buffer.slice(..);
                     let pixels = req.extract_pixels(&slice);
+                    extracted_bytes += pixels.len();
                     req.buffer.unmap();
                     completed.push((ctx, pixels));
                     // Don't increment i; swap_remove moved the last element here.
                 }
-                Some(Err(e)) => {
-                    log::error!("readback buffer mapping failed: {e}");
+                Step::Failed => {
                     self.tasks.swap_remove(i);
                 }
-                None => {
+                Step::Pending => {
                     i += 1;
                 }
             }
@@ -279,6 +399,14 @@ impl<C> ReadbackScheduler<C> {
     #[cfg(any(test, feature = "testing"))]
     pub fn pending_count(&self) -> usize {
         self.tasks.len()
+    }
+
+    /// Total bytes every in-flight request will map. Regression guard:
+    /// a thumbnail readback must stay proportional to the thumb size,
+    /// not the source texture.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn pending_mapped_bytes(&self) -> usize {
+        self.tasks.iter().map(|(r, _)| r.mapped_len()).sum()
     }
 
     /// True if any pending readback matches the predicate.

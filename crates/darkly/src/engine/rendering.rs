@@ -251,16 +251,31 @@ impl DarklyEngine {
         };
         let tex_w = layer_rect.width;
         let tex_h = layer_rect.height;
+        // The thumbnail sampler nearest-neighbour picks `thumb_h` rows out
+        // of the texture; copy only those rows instead of the whole layer.
+        // A canvas-scale layer readback is a ~100 MB staging buffer plus an
+        // equal wasm-side copy, which aborts the engine on OOM.
+        let rows = thumb_h.min(tex_h).max(1);
 
         self.gpu.encode("thumb-readback", |encoder| {
-            let request =
-                readback::request_readback(&self.gpu.device, encoder, texture, format, layer_rect);
+            let request = readback::request_readback_rows(
+                &self.gpu.device,
+                encoder,
+                texture,
+                format,
+                layer_rect,
+                rows,
+            );
             self.readbacks.submit(
                 request,
                 ReadbackContext::Thumbnail {
                     node_id,
                     source_w: tex_w,
-                    source_h: tex_h,
+                    // The mapped image is `tex_w × rows`: row `i` is texture
+                    // row `i * tex_h / rows`, so `cy = oy * rows / thumb_h`
+                    // lands on the same texture row the full readback's
+                    // `oy * tex_h / thumb_h` did. Output is unchanged.
+                    source_h: rows,
                     thumb_w,
                     thumb_h,
                 },

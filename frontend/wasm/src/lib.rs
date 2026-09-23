@@ -1,5 +1,6 @@
 use wasm_bindgen::prelude::*;
 
+mod alloc_watch;
 pub mod api;
 pub mod config_bridge;
 pub mod krita_inspect;
