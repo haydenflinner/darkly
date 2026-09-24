@@ -118,13 +118,21 @@ impl DarklySession {
     /// Build a new `DarklyHandle` bound to `canvas`, sharing this session's GPU
     /// device with every other handle from this session. The first call
     /// allocates the device; subsequent calls reuse it.
+    ///
+    /// A `null`/`undefined` canvas must reject, not throw mid-poll: an
+    /// exception escaping the futures task leaves the returned promise
+    /// pending forever, wedging the caller's `await`.
     #[wasm_bindgen(js_name = createHandle)]
     pub async fn create_handle(
         &self,
         canvas: web_sys::HtmlCanvasElement,
         doc_width: u32,
         doc_height: u32,
-    ) -> DarklyHandle {
+    ) -> Result<DarklyHandle, JsError> {
+        let cv: &JsValue = canvas.as_ref();
+        if cv.is_null() || cv.is_undefined() {
+            return Err(JsError::new("createHandle: canvas is null/undefined"));
+        }
         let initial_width = canvas.width();
         let initial_height = canvas.height();
 
@@ -161,12 +169,12 @@ impl DarklySession {
             }
         };
 
-        DarklyHandle::from_engine(DarklyEngine::new_with_tool_session(
+        Ok(DarklyHandle::from_engine(DarklyEngine::new_with_tool_session(
             gpu,
             self.tool_session.clone(),
             doc_width,
             doc_height,
-        ))
+        )))
     }
 }
 
@@ -236,11 +244,18 @@ impl DarklyHandle {
 impl DarklyHandle {
     /// Create a stand-alone editor instance from a canvas (own device). Prefer
     /// `DarklySession.createHandle` for the multi-tab shared-device case.
+    ///
+    /// Null-canvas guard: see `createHandle` — a mid-poll exception would
+    /// leave the promise pending forever.
     pub async fn create(
         canvas: web_sys::HtmlCanvasElement,
         doc_width: u32,
         doc_height: u32,
-    ) -> DarklyHandle {
+    ) -> Result<DarklyHandle, JsError> {
+        let cv: &JsValue = canvas.as_ref();
+        if cv.is_null() || cv.is_undefined() {
+            return Err(JsError::new("DarklyHandle.create: canvas is null/undefined"));
+        }
         let initial_width = canvas.width();
         let initial_height = canvas.height();
 
@@ -263,7 +278,9 @@ impl DarklyHandle {
             )
             .await;
 
-        DarklyHandle::from_engine(DarklyEngine::new(gpu, doc_width, doc_height))
+        Ok(DarklyHandle::from_engine(DarklyEngine::new(
+            gpu, doc_width, doc_height,
+        )))
     }
 
     // =======================================================================
