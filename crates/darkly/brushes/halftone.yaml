@@ -29,7 +29,7 @@ nodes:
   paint:
     type: paint
     inputs:
-      flow: 0.9
+      build_flow: 0.9
   paint_color:
     type: paint_color
   pattern:

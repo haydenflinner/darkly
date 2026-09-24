@@ -58,7 +58,7 @@ nodes:
 connections:
 - circle.mask -> multiply.b
 - curve.output -> multiply_2.a
-- curve_2.output -> paint.flow
+- curve_2.output -> paint.build_flow
 - multiply.result -> stamp.tip
 - multiply_2.result -> pattern.thickness
 - paint_color.color -> stamp.color
@@ -73,7 +73,7 @@ exposed_ports:
   brush_settings.stabilize: {}
   brush_settings.size: {}
   paint.opacity: {}
-  paint.flow: {}
+  paint.build_flow: {}
   pattern.spacing:
     label: Pitch
     description: Lines per dab radius. Size scales pitch and line width together; this knob sets the ratio.
