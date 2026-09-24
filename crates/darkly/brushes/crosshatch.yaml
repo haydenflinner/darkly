@@ -1,0 +1,96 @@
+name: Crosshatch
+description: A comb of ink lines on a page-fixed grid that follows your stroke direction. Sweep once for hatching, sweep across it for crosshatching; press harder for thicker lines.
+nodes:
+  brush_settings:
+    type: brush_settings
+    inputs:
+      size: 0.22
+      spacing: 0.06
+      stamp_angle_rate: 3.14159265
+  circle:
+    type: circle
+    inputs:
+      algorithm: 0
+      amplitude: 0.0
+      softness: 0.12
+  curve:
+    type: curve
+    inputs:
+      curve:
+      - - 0.0
+        - 0.3
+      - - 1.0
+        - 1.0
+  curve_2:
+    type: curve
+    inputs:
+      curve:
+      - - 0.0
+        - 0.0
+      - - 1.0
+        - 0.55
+  multiply:
+    type: multiply
+  multiply_2:
+    type: multiply
+    inputs:
+      b: 0.5
+  paint:
+    type: paint
+  paint_color:
+    type: paint_color
+  pattern:
+    type: pattern
+    inputs:
+      algorithm: 0
+      space: 0
+      spacing: 6.0
+      rotation: 0.0
+      softness: 0.15
+  pen_input:
+    type: pen_input
+  stamp:
+    type: stamp
+  switch:
+    type: switch
+    inputs:
+      select: true
+connections:
+- circle.mask -> multiply.b
+- curve.output -> multiply_2.a
+- curve_2.output -> paint.flow
+- multiply.result -> stamp.tip
+- multiply_2.result -> pattern.thickness
+- paint_color.color -> stamp.color
+- pattern.mask -> multiply.a
+- pen_input.drawing_angle -> switch.in_1_scalar
+- pen_input.position -> paint.position
+- pen_input.pressure -> curve.input
+- pen_input.pressure -> curve_2.input
+- stamp.dab -> paint.rgba
+- switch.out_scalar -> pattern.rotation_input
+exposed_ports:
+  brush_settings.stabilize: {}
+  brush_settings.size: {}
+  paint.opacity: {}
+  paint.flow: {}
+  pattern.spacing:
+    label: Pitch
+    description: Lines per dab radius. Size scales pitch and line width together; this knob sets the ratio.
+    icon: fa6-solid:grip-lines
+  multiply_2.b:
+    label: Thickness
+    description: Line width as a share of the pitch, before pressure multiplies it.
+    icon: fa6-solid:pen
+  pattern.cross:
+    label: Cross
+    description: Blend in a perpendicular line set for single-stroke crosshatching.
+    icon: fa6-solid:border-all
+  pattern.rotation:
+    label: Angle
+    description: Grid angle relative to the stroke direction (or to the page when Follow Stroke is off).
+    icon: fa6-solid:rotate
+  switch.select:
+    label: Follow Stroke
+    description: Rotates the hatch grid to stay perpendicular to your stroke. Turn it off to hold the grid at one angle and cross it by hand.
+    icon: fa6-solid:lock

@@ -1735,3 +1735,158 @@ fn polygon_extent_falls_back_when_squeeze_axis_is_wired() {
         compiled.brush_extent_factor,
     );
 }
+
+/// Feature test: the `pattern` node compiles and emits a periodic line
+/// field (a rotated sampling basis, a `fract` stripe distance and a
+/// `smoothstep` feather) in both shader variants, both naga-valid.
+#[test]
+fn pattern_lines_compile_and_emit_periodic_field() {
+    let reg = registry();
+    let mut graph = Graph::<BrushWireType>::new();
+    let pen = graph.add_node("pen_input", reg.get("pen_input").unwrap().ports.clone());
+    let paint_color = graph.add_node("paint_color", reg.get("paint_color").unwrap().ports.clone());
+    let pat = graph.add_node("pattern", reg.get("pattern").unwrap().ports.clone());
+    graph
+        .set_port_value(&pat, "algorithm", InputValue::Int(0))
+        .unwrap();
+    let stamp = graph.add_node("stamp", reg.get("stamp").unwrap().ports.clone());
+    let term = graph.add_node("paint", reg.get("paint").unwrap().ports.clone());
+    wire(
+        &mut graph,
+        &[
+            (pen.clone(), "position", term.clone(), "position"),
+            (paint_color.clone(), "color", stamp.clone(), "color"),
+            (pat.clone(), "mask", stamp.clone(), "tip"),
+            (stamp.clone(), "dab", term.clone(), "rgba"),
+        ],
+    );
+    let plan = compile(&graph, reg.as_map()).unwrap();
+    let compiled = compile_brush_to_wgsl(&graph, &plan, &evals()).expect("pattern compiles");
+    for (label, w) in [
+        ("stroke_wgsl", &compiled.stroke_wgsl),
+        ("cursor_preview_wgsl", &compiled.cursor_preview_wgsl),
+    ] {
+        assert!(
+            w.contains("fract("),
+            "{label} must repeat the field per cell with fract"
+        );
+        assert!(
+            w.contains("smoothstep("),
+            "{label} must feather the stripe edge with smoothstep"
+        );
+        assert!(
+            w.contains("dot("),
+            "{label} must project the coordinate onto the screen basis"
+        );
+        naga_validate(w, label);
+    }
+}
+
+/// The Dots branch swaps the stripe distance for a cell-centred radial
+/// distance: the halftone screen.
+#[test]
+fn pattern_dots_emit_cell_centred_distance() {
+    let reg = registry();
+    let mut graph = Graph::<BrushWireType>::new();
+    let pen = graph.add_node("pen_input", reg.get("pen_input").unwrap().ports.clone());
+    let paint_color = graph.add_node("paint_color", reg.get("paint_color").unwrap().ports.clone());
+    let pat = graph.add_node("pattern", reg.get("pattern").unwrap().ports.clone());
+    graph
+        .set_port_value(&pat, "algorithm", InputValue::Int(1))
+        .unwrap();
+    let stamp = graph.add_node("stamp", reg.get("stamp").unwrap().ports.clone());
+    let term = graph.add_node("paint", reg.get("paint").unwrap().ports.clone());
+    wire(
+        &mut graph,
+        &[
+            (pen.clone(), "position", term.clone(), "position"),
+            (paint_color.clone(), "color", stamp.clone(), "color"),
+            (pat.clone(), "mask", stamp.clone(), "tip"),
+            (stamp.clone(), "dab", term.clone(), "rgba"),
+        ],
+    );
+    let plan = compile(&graph, reg.as_map()).unwrap();
+    let compiled = compile_brush_to_wgsl(&graph, &plan, &evals()).expect("pattern dots compiles");
+    assert!(
+        compiled.stroke_wgsl.contains("length(vec2<f32>(fract("),
+        "dots must measure radial distance to the cell centre:\n{}",
+        compiled.stroke_wgsl,
+    );
+    naga_validate(&compiled.stroke_wgsl, "pattern dots stroke_wgsl");
+}
+
+/// `space` selects the field anchor: Canvas samples `target_pos` (the
+/// screen is glued to the page, so overlapping dabs share one grid);
+/// Dab rebuilds the oriented `local_uv` frame so the pattern travels with
+/// the stamp.
+#[test]
+fn pattern_space_selects_field_anchor() {
+    let reg = registry();
+    for (space, want, absent) in [
+        (0, "target_pos", "dab_local"),
+        (1, "dab_local", "target_pos /"),
+    ] {
+        let mut graph = Graph::<BrushWireType>::new();
+        let pen = graph.add_node("pen_input", reg.get("pen_input").unwrap().ports.clone());
+        let paint_color =
+            graph.add_node("paint_color", reg.get("paint_color").unwrap().ports.clone());
+        let pat = graph.add_node("pattern", reg.get("pattern").unwrap().ports.clone());
+        graph
+            .set_port_value(&pat, "space", InputValue::Int(space))
+            .unwrap();
+        let stamp = graph.add_node("stamp", reg.get("stamp").unwrap().ports.clone());
+        let term = graph.add_node("paint", reg.get("paint").unwrap().ports.clone());
+        wire(
+            &mut graph,
+            &[
+                (pen.clone(), "position", term.clone(), "position"),
+                (paint_color.clone(), "color", stamp.clone(), "color"),
+                (pat.clone(), "mask", stamp.clone(), "tip"),
+                (stamp.clone(), "dab", term.clone(), "rgba"),
+            ],
+        );
+        let plan = compile(&graph, reg.as_map()).unwrap();
+        let compiled =
+            compile_brush_to_wgsl(&graph, &plan, &evals()).expect("pattern compiles per space");
+        assert!(
+            compiled.stroke_wgsl.contains(want),
+            "space={space} must anchor via {want}:\n{}",
+            compiled.stroke_wgsl,
+        );
+        assert!(
+            !compiled.stroke_wgsl.contains(absent),
+            "space={space} must not emit the other anchor's {absent}:\n{}",
+            compiled.stroke_wgsl,
+        );
+    }
+}
+
+/// The periodic field fills its dab quad corner-to-corner, so the node's
+/// extent budget is the quad's circumradius (sqrt(2) radii). A brush that
+/// wires `pattern.mask` straight into `stamp.tip` must budget it.
+#[test]
+fn pattern_extent_budgets_quad_corner() {
+    let reg = registry();
+    let mut graph = Graph::<BrushWireType>::new();
+    let pen = graph.add_node("pen_input", reg.get("pen_input").unwrap().ports.clone());
+    let paint_color = graph.add_node("paint_color", reg.get("paint_color").unwrap().ports.clone());
+    let pat = graph.add_node("pattern", reg.get("pattern").unwrap().ports.clone());
+    let stamp = graph.add_node("stamp", reg.get("stamp").unwrap().ports.clone());
+    let term = graph.add_node("paint", reg.get("paint").unwrap().ports.clone());
+    wire(
+        &mut graph,
+        &[
+            (pen.clone(), "position", term.clone(), "position"),
+            (paint_color.clone(), "color", stamp.clone(), "color"),
+            (pat.clone(), "mask", stamp.clone(), "tip"),
+            (stamp.clone(), "dab", term.clone(), "rgba"),
+        ],
+    );
+    let plan = compile(&graph, reg.as_map()).unwrap();
+    let compiled = compile_brush_to_wgsl(&graph, &plan, &evals()).unwrap();
+    assert!(
+        (compiled.brush_extent_factor - std::f32::consts::SQRT_2).abs() < 1e-3,
+        "pattern fills the dab quad: extent must be sqrt(2), got {}",
+        compiled.brush_extent_factor,
+    );
+}
