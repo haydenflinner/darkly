@@ -239,8 +239,6 @@ cargo test --workspace --exclude darkly-wasm --features darkly/testing -- --test
 
 Every flag above is load-bearing. What each one defends against, the shape Vitest tests have to take with no DOM, and the `cargo sweep` housekeeping that keeps `target/` from ballooning are in [`docs/checks.md`](docs/checks.md).
 
-Never run `git commit`: make the changes and leave staging and committing to the user.
-
 ## Questions
 
 Open an issue, or contact <info@darkly.art>.
