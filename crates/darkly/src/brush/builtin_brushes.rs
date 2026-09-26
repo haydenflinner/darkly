@@ -320,4 +320,40 @@ mod tests {
             "liquify spacing default is {spacing}, expected <= 5% for smooth warps",
         );
     }
+
+    /// The Highlighter's identity is the wash end of the accumulation dial:
+    /// one flat tint, and a stroke can never darken itself by crossing its
+    /// own path. It also ships translucent, like the felt tip it names. Pin
+    /// both: any `buildup` lets its own dabs stack, and full `opacity` makes
+    /// it a marker, not a highlighter.
+    #[test]
+    fn highlighter_is_pure_wash_and_translucent() {
+        let brush = all()
+            .into_iter()
+            .find(|b| b.metadata.name == "Highlighter")
+            .expect("Highlighter built-in must exist");
+        let paint = brush
+            .metadata
+            .graph
+            .nodes()
+            .values()
+            .find(|n| n.type_id == crate::brush::nodes::paint::TYPE_ID)
+            .expect("Highlighter has a paint terminal");
+        let input = |name: &str| {
+            paint
+                .ports
+                .iter()
+                .find(|p| p.name == name && p.dir == crate::nodegraph::PortDir::Input)
+                .map(|p| p.value.as_f32())
+        };
+        assert_eq!(
+            input("buildup"),
+            Some(0.0),
+            "Highlighter must sit at the wash end of the accumulation dial",
+        );
+        assert!(
+            input("opacity").is_some_and(|o| o < 1.0),
+            "Highlighter ships translucent, not fully opaque",
+        );
+    }
 }

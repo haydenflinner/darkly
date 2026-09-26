@@ -1,0 +1,36 @@
+name: Highlighter
+description: A translucent felt tip that lays one flat tint; crossing back over the stroke never darkens it.
+nodes:
+  brush_settings:
+    type: brush_settings
+    inputs:
+      spacing: 0.05
+      stabilize: 0.5
+  circle:
+    type: circle
+    inputs:
+      softness: 0.15
+  paint:
+    type: paint
+    inputs:
+      buildup: 0.0
+      opacity: 0.5
+  paint_color:
+    type: paint_color
+  pen_input:
+    type: pen_input
+  stamp:
+    type: stamp
+connections:
+- circle.mask -> stamp.tip
+- paint_color.color -> stamp.color
+- pen_input.position -> paint.position
+- pen_input.pressure -> paint.wash_flow
+- stamp.dab -> paint.rgba
+exposed_ports:
+  brush_settings.stabilize: {}
+  brush_settings.size: {}
+  circle.softness: {}
+  paint.wash_flow: {}
+  paint.opacity: {}
+  paint.buildup: {}
