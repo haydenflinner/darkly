@@ -57,10 +57,13 @@ pub struct FontCapabilities {
 const BUNDLED_FONTS: &[&[u8]] = &[
     include_bytes!("../../resources/fonts/NotoSans-VF.ttf"),
     include_bytes!("../../resources/fonts/NotoSans-Italic-VF.ttf"),
-    // Symbols face — not a family users pick, but the fallback stack's
-    // coverage for geometric shapes/arrows/symbols (▶ ⏸ ✓ …) that Noto
-    // Sans lacks; without it wasm has no system font to rescue the
-    // glyph and it renders as tofu.
+    // Symbols faces — not families users pick, but the fallback stack's
+    // coverage for glyphs Noto Sans lacks; without them wasm has no
+    // system font to rescue the glyph and it renders as tofu. The two
+    // Noto symbol fonts split the work: Symbols carries the basic
+    // arrows (← ↑ → ↓ ↔) and math miscellany, Symbols 2 the geometric
+    // shapes/dingbats/technical marks (▶ ⏸ ✓ ☰ ⚠ …).
+    include_bytes!("../../resources/fonts/NotoSansSymbols-Regular.ttf"),
     include_bytes!("../../resources/fonts/NotoSansSymbols2-Regular.ttf"),
 ];
 
@@ -247,12 +250,12 @@ impl FontRegistry {
     }
 
     /// Shape + lay out a [`TextProps`] block into a positioned [`Layout`]. The
-    /// requested family falls back to the bundled Noto Sans, then Noto Sans
-    /// Symbols 2 (shapes/arrows/dingbats), then the generic sans-serif, so a
-    /// family or glyph the binary doesn't ship still renders.
+    /// requested family falls back to the bundled Noto Sans, then the two Noto
+    /// Sans Symbols faces (arrows/math, then shapes/dingbats), then the generic
+    /// sans-serif, so a family or glyph the binary doesn't ship still renders.
     pub fn shape(&mut self, text: &TextProps) -> Layout<()> {
         let stack = format!(
-            "{}, Noto Sans, Noto Sans Symbols 2, sans-serif",
+            "{}, Noto Sans, Noto Sans Symbols, Noto Sans Symbols 2, sans-serif",
             text.font_family
         );
         let mut builder =
@@ -502,6 +505,54 @@ mod tests {
                 .any(|s| matches!(s, FontStyle::Italic | FontStyle::Oblique(_))),
             "bundled Noto Sans must ship an italic face so FontStyle::Italic isn't \
              inert on wasm (styles={styles:?})"
+        );
+    }
+
+    /// Regression: `→` rendered tofu on wasm. The bundled fallback stack shipped
+    /// Noto Sans Symbols 2 but not Noto Sans Symbols — the Noto split puts the
+    /// basic arrows (U+2190–2199) in Symbols, so the fallback chain had no face
+    /// carrying them. Shape a glyph set through a **system-font-free**
+    /// collection (wasm has no system fonts; a native system font would mask a
+    /// missing bundled one) and assert none shape to glyph id 0 (.notdef).
+    #[test]
+    fn bundled_fallback_covers_the_basic_symbols() {
+        use parley::fontique::{Collection, CollectionOptions};
+        use parley::{FontContext, LayoutContext};
+
+        let mut collection = Collection::new(CollectionOptions {
+            system_fonts: false,
+            ..Default::default()
+        });
+        for bytes in BUNDLED_FONTS {
+            collection.register_fonts(peniko::Blob::from(bytes.to_vec()), None);
+        }
+        let mut font_cx = FontContext {
+            collection,
+            ..Default::default()
+        };
+        let mut layout_cx = LayoutContext::<()>::new();
+
+        let mut builder = layout_cx.ranged_builder(&mut font_cx, "a→»☰⚠", 1.0, true);
+        builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
+            Cow::Borrowed("Noto Sans, Noto Sans Symbols, Noto Sans Symbols 2, sans-serif"),
+        )));
+        let mut layout: Layout<()> = builder.build(&"a→»☰⚠");
+        layout.break_all_lines(None);
+
+        let ids: Vec<u32> = layout
+            .lines()
+            .flat_map(|l| l.items())
+            .flat_map(|i| match i {
+                PositionedLayoutItem::GlyphRun(gr) => {
+                    gr.positioned_glyphs().map(|g| g.id).collect::<Vec<_>>()
+                }
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(ids.len(), 5, "one glyph per char: {ids:?}");
+        assert!(
+            ids.iter().all(|&id| id != 0),
+            "a bundled face must cover every char — glyph id 0 is .notdef tofu ({ids:?})"
         );
     }
 

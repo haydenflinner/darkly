@@ -89,6 +89,12 @@ export class Engine {
     private nextId = 1;
     private drainScheduled = false;
     private readonly channel: MessageChannel;
+    /// `free()` flips this: later requests reject instead of calling into a
+    /// zeroed wasm pointer ("null pointer passed to rust"), and in-flight
+    /// requests settle instead of awaiting a dead transport forever. The
+    /// stale-caller case is an HMR remount — old-mount continuations still
+    /// hold this Engine while the cleanup already freed the handle.
+    private closed = false;
 
     /** The typed, per-kind request surface, the only public request API.
      *  Generated from the engine's method signatures (`protocol_gen.ts`);
@@ -119,7 +125,30 @@ export class Engine {
         const promise = new Promise<T>((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
         });
-        this.handle.enqueue(id, kind, payload, bytes);
+        const fail = (e: unknown) => {
+            const p = this.pending.get(id);
+            if (!p) return;
+            this.pending.delete(id);
+            p.reject({
+                kind: 'engine_error',
+                message: e instanceof Error ? e.message : String(e),
+            });
+        };
+        if (this.closed) {
+            // The handle is freed — enqueue would throw 'null pointer passed
+            // to rust'. Reject fast so stale callers (an old mount's pending
+            // continuations) fail their await, not the page.
+            fail(new Error('engine closed'));
+            return promise;
+        }
+        try {
+            this.handle.enqueue(id, kind, payload, bytes);
+        } catch (e) {
+            // A synchronous throw (freed handle, wedged instance) means the
+            // request never landed: reject rather than leak it pending.
+            fail(e);
+            return promise;
+        }
         this.armDrain();
         return promise;
     }
@@ -137,6 +166,7 @@ export class Engine {
      *  counters that used to be separate borrowing reads). `busy` is true when a
      *  re-entrant render couldn't get the borrow, so caller must not reschedule. */
     render(timeSecs: number): FrameStatus {
+        if (this.closed) throw new Error('engine closed');
         let status: FrameStatus;
         try {
             status = this.handle.render(timeSecs) as FrameStatus;
@@ -153,6 +183,10 @@ export class Engine {
      *  isn't JSON) is still deferred, applied at the next drain/render. The
      *  bridge closes the bitmap once the copy is recorded. */
     uploadVoidExternalImage(layerId: number, bitmap: ImageBitmap): void {
+        if (this.closed) {
+            bitmap.close();
+            return;
+        }
         this.handle.upload_void_external_image(layerId, bitmap);
     }
 
@@ -162,9 +196,18 @@ export class Engine {
         return this.handle.engine_default_thumb_size();
     }
 
-    /** Release the underlying wasm handle (wasm-bindgen destructor). */
+    /** Release the underlying wasm handle (wasm-bindgen destructor). Idempotent:
+     *  marks the transport closed first so in-flight and future requests reject
+     *  cleanly instead of throwing wasm null-pointer traps. */
     free(): void {
-        this.handle.free();
+        if (this.closed) return;
+        this.closed = true;
+        this.#rejectAllPending(new Error('engine closed'));
+        try {
+            this.handle.free();
+        } catch {
+            // already freed elsewhere — the closed flag is the truth
+        }
     }
 
     private armDrain(): void {
