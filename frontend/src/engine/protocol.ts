@@ -190,6 +190,23 @@ export class Engine {
         this.handle.upload_void_external_image(layerId, bitmap);
     }
 
+    /** GPU-native `api.pasteImage`: paste a new raster layer whose pixels come
+     *  from an `ImageBitmap` via `copyExternalImageToTexture` — no
+     *  `getImageData` readback, so the paste survives browsers that randomize
+     *  canvas extraction (Firefox-family resistFingerprinting). Resolves
+     *  `{ id }` like `api.pasteImage`; the bridge closes `bitmap` after the
+     *  copy is recorded. `req` is `pasteImage`'s payload minus the pixels. */
+    pasteImageExternal(
+        req: { width: number; height: number; offset_x: number; offset_y: number; active_layer_id: number },
+        bitmap: ImageBitmap,
+    ): Promise<{ id: number }> {
+        if (this.closed) {
+            bitmap.close();
+            return Promise.reject(new Error('engine closed'));
+        }
+        return this.handle.paste_image_external(req, bitmap) as Promise<{ id: number }>;
+    }
+
     /** Engine-side default thumbnail dimension (compile-time constant; no
      *  engine borrow). The frontend's `THUMB_SIZE` must match. */
     engineDefaultThumbSize(): number {

@@ -478,6 +478,50 @@ impl DarklyEngine {
         offset_y: i32,
         active_layer_id: Option<LayerId>,
     ) -> LayerId {
+        let id = self.new_pasted_layer(width, height, offset_x, offset_y);
+
+        // Single helper writes the bytes AND marks the node's pixels
+        // dirty so the next render queues a thumbnail readback;
+        // forgetting the dirty mark was the bug that left
+        // `open_document`-loaded layers without thumbnails until the
+        // artist's first edit.
+        self.compositor
+            .upload_node_pixels(&self.gpu.queue, id, rgba);
+
+        self.finish_pasted_layer(id, active_layer_id)
+    }
+
+    /// GPU-native [`paste_image`]: the pixels arrive as a browser image source
+    /// (`ImageBitmap` et al.) and are copied into the layer texture by
+    /// `copy_external_image_to_texture` — no `getImageData` round-trip through
+    /// JS. This is the ingest path hosts use when canvas readbacks are
+    /// poisoned (Firefox-family `resistFingerprinting`) or simply unwanted.
+    pub fn paste_image_external(
+        &mut self,
+        width: u32,
+        height: u32,
+        source: crate::gpu::void::ExternalImageSource,
+        offset_x: i32,
+        offset_y: i32,
+        active_layer_id: Option<LayerId>,
+    ) -> LayerId {
+        let id = self.new_pasted_layer(width, height, offset_x, offset_y);
+        self.compositor
+            .upload_node_external(&self.gpu.queue, id, source);
+        self.finish_pasted_layer(id, active_layer_id)
+    }
+
+    /// The document + compositor half of a paste: create the raster layer at
+    /// the paste's own bounds and allocate its texture. The caller then
+    /// fills the texture (bytes or external copy) and calls
+    /// [`finish_pasted_layer`](Self::finish_pasted_layer).
+    fn new_pasted_layer(
+        &mut self,
+        width: u32,
+        height: u32,
+        offset_x: i32,
+        offset_y: i32,
+    ) -> LayerId {
         // Size the new layer to fit the paste exactly, so out-of-canvas
         // pixels are preserved.
         let layer_bounds = crate::coord::CanvasRect::from_xywh(offset_x, offset_y, width, height);
@@ -492,14 +536,12 @@ impl DarklyEngine {
         self.compositor
             .ensure_raster_layer(&self.gpu.device, &self.gpu.queue, id, layer_bounds);
 
-        // Single helper writes the bytes AND marks the node's pixels
-        // dirty so the next render queues a thumbnail readback;
-        // forgetting the dirty mark was the bug that left
-        // `open_document`-loaded layers without thumbnails until the
-        // artist's first edit.
-        self.compositor
-            .upload_node_pixels(&self.gpu.queue, id, rgba);
+        id
+    }
 
+    /// The placement + undo half of a paste, shared by `paste_image` and
+    /// `paste_image_external`.
+    fn finish_pasted_layer(&mut self, id: LayerId, active_layer_id: Option<LayerId>) -> LayerId {
         // Position relative to the active node. `resolve_anchor_target` maps a
         // filter anchor (the active id while editing a mask) to its host, so
         // the pasted layer lands as the host's sibling rather than nested under

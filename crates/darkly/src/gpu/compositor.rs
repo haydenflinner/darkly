@@ -2275,6 +2275,66 @@ impl Compositor {
         true
     }
 
+    /// GPU-native counterpart of [`upload_node_pixels`]: copy a browser image
+    /// source (`ImageBitmap`, canvas, video) straight into the node's texture
+    /// via `copy_external_image_to_texture`, so the pixels never touch a JS
+    /// readback. This is the only ingest path that survives browsers which
+    /// randomize canvas extraction (Firefox-family `resistFingerprinting`).
+    ///
+    /// The source must exactly cover the texture (`width × height` of the
+    /// layer extent), matching the `upload_node_pixels` contract. Dest texels
+    /// are **straight alpha** — the raster-layer convention (`premultiplied
+    /// -alpha: false` so the copy un-premultiplies, like `getImageData`).
+    ///
+    /// Returns `false` when the node has no texture or the source doesn't
+    /// match its extent; callers treat that as "silently skip", same as the
+    /// bytes path.
+    pub fn upload_node_external(
+        &mut self,
+        queue: &wgpu::Queue,
+        node_id: LayerId,
+        source: crate::gpu::void::ExternalImageSource,
+    ) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let crate::gpu::void::ExternalImageSource::Web(info) = source;
+            let Some(tex) = self.node_textures.get(&node_id).map(|s| &s.texture) else {
+                return false;
+            };
+            let extent = tex.layer_extent();
+            let (w, h) = (info.source.width(), info.source.height());
+            if w != extent.width || h != extent.height || w == 0 {
+                return false;
+            }
+            queue.copy_external_image_to_texture(
+                &info,
+                wgpu::CopyExternalImageDestInfo {
+                    texture: tex.texture(),
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                    color_space: wgpu::PredefinedColorSpace::Srgb,
+                    premultiplied_alpha: false,
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.mark_node_pixels_dirty(node_id);
+            true
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // The enum is uninhabited on native; this arm exists only so the
+            // method body compiles (same pattern as `Void::upload_external_image`).
+            let _ = (queue, node_id);
+            match source {}
+        }
+    }
+
     /// Allocate or replace a node's GPU texture. Format-driven: `R8Unorm`
     /// allocates a mask-style (white-fill) texture; `Rgba8Unorm` allocates a
     /// raster-style (zero-fill) texture. Existing texture for the same id is

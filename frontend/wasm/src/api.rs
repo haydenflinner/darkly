@@ -205,6 +205,17 @@ struct PendingExternalImage {
     bitmap: web_sys::ImageBitmap,
 }
 
+/// A deferred raster-layer paste whose pixels arrive as an `ImageBitmap`. Same
+/// side-FIFO exception as [`PendingExternalImage`] — a JsValue can't cross the
+/// serialized protocol transport — but unlike a void upload the paste answers
+/// a promise: the caller needs the new layer's id back, so the entry carries
+/// the resolver.
+struct PendingPasteExternal {
+    req: darkly::engine::protocol::handlers::clipboard::PasteImageReq,
+    bitmap: web_sys::ImageBitmap,
+    resolve: js_sys::Function,
+}
+
 #[wasm_bindgen]
 pub struct DarklyHandle {
     engine: RefCell<DarklyEngine>,
@@ -214,6 +225,9 @@ pub struct DarklyHandle {
     /// Side-FIFO for the OffscreenCanvas upload exception (see
     /// [`PendingExternalImage`]). Enqueue-only; applied at drain/render time.
     pending_images: RefCell<Vec<PendingExternalImage>>,
+    /// Side-FIFO for GPU-native image pastes (see [`PendingPasteExternal`]).
+    /// Enqueue-only; applied at drain/render time alongside `pending_images`.
+    pending_pastes: RefCell<Vec<PendingPasteExternal>>,
 }
 
 impl DarklyHandle {
@@ -222,6 +236,7 @@ impl DarklyHandle {
             engine: RefCell::new(engine),
             transport: Transport::new(),
             pending_images: RefCell::new(Vec::new()),
+            pending_pastes: RefCell::new(Vec::new()),
         }
     }
 
@@ -235,6 +250,31 @@ impl DarklyHandle {
             engine.upload_void_external_image(LayerId::from_ffi(p.layer_id), p.source);
             // The copy is recorded (and the source snapshotted) by the call
             // above; release the bitmap so the decoder buffer is freed now.
+            p.bitmap.close();
+        }
+        let pastes: Vec<PendingPasteExternal> =
+            self.pending_pastes.borrow_mut().drain(..).collect();
+        for p in pastes {
+            let info = wgpu::CopyExternalImageSourceInfo {
+                source: wgpu::ExternalImageSource::ImageBitmap(p.bitmap.clone()),
+                origin: wgpu::Origin2d::ZERO,
+                flip_y: false,
+            };
+            // `active_layer_id` follows the f64 negative-means-none FFI
+            // convention, same as the `paste_image` protocol handler.
+            let active = (p.req.active_layer_id >= 0)
+                .then(|| LayerId::from_ffi(p.req.active_layer_id as u64));
+            let id = engine.paste_image_external(
+                p.req.width,
+                p.req.height,
+                darkly::gpu::void::ExternalImageSource::Web(info),
+                p.req.offset_x,
+                p.req.offset_y,
+                active,
+            );
+            let obj = js_sys::Object::new();
+            set(&obj, "id", JsValue::from_f64(id.to_ffi() as f64));
+            let _ = p.resolve.call1(&JsValue::NULL, &obj);
             p.bitmap.close();
         }
     }
@@ -395,6 +435,45 @@ impl DarklyHandle {
             source: darkly::gpu::void::ExternalImageSource::Web(info),
             bitmap,
         });
+    }
+
+    /// Queue a raster-layer paste sourced from an `ImageBitmap` — the
+    /// GPU-native `paste_image` (`copy_external_image_to_texture` into the new
+    /// layer's texture, no `getImageData` readback). Returns a promise that
+    /// resolves `{ id: <layer-id> }` once the paste has landed at the next
+    /// drain/render; rejects immediately on a malformed `payload`. The
+    /// `payload` shape is `paste_image`'s (`PasteImageReq`); the pixels come
+    /// from `bitmap`, which is `.close()`d after the copy is recorded.
+    pub fn paste_image_external(
+        &self,
+        payload: JsValue,
+        bitmap: web_sys::ImageBitmap,
+    ) -> js_sys::Promise {
+        match serde_wasm_bindgen::from_value::<
+            darkly::engine::protocol::handlers::clipboard::PasteImageReq,
+        >(payload)
+        {
+            Ok(req) => {
+                // `Promise::new` takes `FnMut`, so the entry rides in behind
+                // `Option::take`; the executor runs synchronously, once.
+                let pending = &self.pending_pastes;
+                let mut entry = Some(req);
+                let mut bitmap = Some(bitmap);
+                js_sys::Promise::new(&mut |resolve, _reject| {
+                    pending.borrow_mut().push(PendingPasteExternal {
+                        req: entry.take().expect("promise executor runs once"),
+                        bitmap: bitmap.take().expect("promise executor runs once"),
+                        resolve,
+                    });
+                })
+            }
+            Err(e) => {
+                bitmap.close();
+                js_sys::Promise::reject(&JsValue::from_str(&format!(
+                    "paste_image_external: bad payload: {e}"
+                )))
+            }
+        }
     }
 
     /// Engine-side thumbnail dimension used by the auto-queue path. Returns a
