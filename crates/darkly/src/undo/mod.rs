@@ -150,6 +150,16 @@ impl UndoStack {
         self.undo_steps.len()
     }
 
+    /// Stack depths — `history_status` surfaces them for "can I undo?"
+    /// affordances and diagnostics.
+    pub fn undo_len(&self) -> usize {
+        self.undo_steps.len()
+    }
+
+    pub fn redo_len(&self) -> usize {
+        self.redo_steps.len()
+    }
+
     /// Push a completed action. Clears redo history.
     ///
     /// Takes `&mut Document` so the chokepoint can set the sticky

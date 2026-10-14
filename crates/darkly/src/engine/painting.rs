@@ -112,7 +112,10 @@ impl DarklyEngine {
             &commit.snapshot,
             rect,
         );
-        self.push_undo(Box::new(GpuRegionAction::new(entry)));
+        // Bypasses `history_suppressed`: the stroke already began
+        // unsuppressed — dropping its commit here would corrupt the
+        // stack order the artist expects.
+        self.push_undo_recorded(Box::new(GpuRegionAction::new(entry)));
     }
 
     // --- Painting ---

@@ -418,6 +418,10 @@ pub struct DarklyEngine {
     /// OS fonts later through [`crate::text::FontRegistry::register_font`].
     pub(crate) fonts: crate::text::FontRegistry,
     pub(crate) undo_stack: UndoStack,
+    /// While set, mutations apply but record no undo entry — hosts use it
+    /// to drive view-sync (onion-skin ghosts, frame visibility) without
+    /// polluting artist history. Toggled by `suppress_history`.
+    pub(crate) history_suppressed: bool,
     pub(crate) active_stroke_layer: Option<LayerId>,
     /// Session-level "isolate this node" flag. When set, the renderer shows
     /// only this node's contribution (e.g. an R8 mask is rendered grayscale,
@@ -738,6 +742,7 @@ impl DarklyEngine {
             gpu,
             fonts: crate::text::FontRegistry::new(),
             undo_stack,
+            history_suppressed: false,
             active_stroke_layer: None,
             isolated_node: None,
             view_transform: ViewTransform::identity(),

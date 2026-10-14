@@ -1493,6 +1493,9 @@ impl DarklyEngine {
 
         self.refresh_blend_uniforms(id);
         self.compositor.mark_dirty();
+        if old_opacity == opacity {
+            return;
+        }
 
         self.coalesce_property_undo(PropertyAction::new(
             id,
@@ -1579,6 +1582,9 @@ impl DarklyEngine {
             None
         };
         if let Some(old) = old_visible {
+            if old == visible {
+                return;
+            }
             self.compositor.mark_dirty();
             self.push_undo(Box::new(crate::undo::NodeVisibleAction::new(id, old)));
         }
@@ -1602,6 +1608,9 @@ impl DarklyEngine {
             None
         };
         if let Some(old) = old_locked {
+            if old == locked {
+                return;
+            }
             self.push_undo(Box::new(crate::undo::NodeLockedAction::new(id, old)));
         }
     }
@@ -1723,6 +1732,9 @@ impl DarklyEngine {
             Some(n) => n.common().name.clone(),
             None => return,
         };
+        if old_name == name {
+            return;
+        }
         if let Some(node) = self.doc.find_node_mut(id) {
             node.common_mut().name = name.to_string();
         } else {

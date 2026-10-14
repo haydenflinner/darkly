@@ -413,6 +413,8 @@ export type GrowSelectionReq = { radius: number, };
 
 export type HistogramReq = { id: number, };
 
+export type HistoryStatus = { undo: number, redo: number, };
+
 export type HitTestVectorObjectReq = { id: number, x: number, y: number, };
 
 export type InputValue = boolean | number | number | string | Array<[number, number]> | [number, number] | [number, number, number, number];
@@ -1041,6 +1043,8 @@ cr: number, cg: number, cb: number, ca: number, };
 
 export type StrokeToReq = { op: StrokeOp, };
 
+export type SuppressHistoryReq = { on: boolean, };
+
 export type Transform = { "mode": "Basic", "data": [number, number, number, number, number, number] } | { "mode": "Perspective", "data": [number, number, number, number, number, number, number, number, number] };
 
 export type TransformCapabilityError = { endpoint: number, operation: PixelTransformOperation, };
@@ -1143,6 +1147,7 @@ export type RequestKind =
     | 'catalogs'
     | 'clear_brush_cursor_preview_pose'
     | 'clear_clone_overlay'
+    | 'clear_history'
     | 'clear_overlay'
     | 'clear_overlay_mask'
     | 'clear_selection'
@@ -1177,6 +1182,7 @@ export type RequestKind =
     | 'has_pending_color_pick'
     | 'has_selection'
     | 'histogram_result'
+    | 'history_status'
     | 'hit_test_vector_object'
     | 'invert_selection'
     | 'is_dirty'
@@ -1267,6 +1273,7 @@ export type RequestKind =
     | 'start_preview'
     | 'start_save_document'
     | 'stroke_to'
+    | 'suppress_history'
     | 'take_transform_setup_error'
     | 'text_objects'
     | 'undo'
@@ -1343,6 +1350,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'catalogs',
     'clear_brush_cursor_preview_pose',
     'clear_clone_overlay',
+    'clear_history',
     'clear_overlay',
     'clear_overlay_mask',
     'clear_selection',
@@ -1377,6 +1385,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'has_pending_color_pick',
     'has_selection',
     'histogram_result',
+    'history_status',
     'hit_test_vector_object',
     'invert_selection',
     'is_dirty',
@@ -1467,6 +1476,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'start_preview',
     'start_save_document',
     'stroke_to',
+    'suppress_history',
     'take_transform_setup_error',
     'text_objects',
     'undo',
@@ -1551,6 +1561,7 @@ export interface EngineApi {
     catalogs(): Promise<Array<Catalog>>;
     clearBrushCursorPreviewPose(): void;
     clearCloneOverlay(): void;
+    clearHistory(): void;
     clearOverlay(): void;
     clearOverlayMask(): void;
     clearSelection(): void;
@@ -1585,6 +1596,7 @@ export interface EngineApi {
     hasPendingColorPick(): Promise<boolean>;
     hasSelection(): Promise<boolean>;
     histogramResult(req: HistogramReq): Promise<{ bytes: Uint8Array }>;
+    historyStatus(): Promise<HistoryStatus>;
     hitTestVectorObject(req: HitTestVectorObjectReq): Promise<{ object: number }>;
     invertSelection(): void;
     isDirty(): Promise<boolean>;
@@ -1675,6 +1687,7 @@ export interface EngineApi {
     startPreview(req: PreviewReq): void;
     startSaveDocument(req: StartSaveDocumentReq): Promise<void>;
     strokeTo(req: StrokeToReq): void;
+    suppressHistory(req: SuppressHistoryReq): void;
     takeTransformSetupError(): Promise<TransformCapabilityError | null>;
     textObjects(req: LayerIdReq): Promise<{ objects: Array<{ object: number, content: string, font_family: string, size: number, variations: Record<string, number>, features: Record<string, number>, letter_spacing: number, word_spacing: number, line_height: number, italic: boolean, align: string, color: [number, number, number, number], box: [number, number] | null }> }>;
     undo(): void;
@@ -1753,6 +1766,7 @@ export function makeApi(t: Transport): EngineApi {
         catalogs: () => t.request('catalogs'),
         clearBrushCursorPreviewPose: () => t.postFF('clear_brush_cursor_preview_pose'),
         clearCloneOverlay: () => t.postFF('clear_clone_overlay'),
+        clearHistory: () => t.postFF('clear_history'),
         clearOverlay: () => t.postFF('clear_overlay'),
         clearOverlayMask: () => t.postFF('clear_overlay_mask'),
         clearSelection: () => t.postFF('clear_selection'),
@@ -1787,6 +1801,7 @@ export function makeApi(t: Transport): EngineApi {
         hasPendingColorPick: () => t.request('has_pending_color_pick'),
         hasSelection: () => t.request('has_selection'),
         histogramResult: (req) => t.request('histogram_result', req),
+        historyStatus: () => t.request('history_status'),
         hitTestVectorObject: (req) => t.request('hit_test_vector_object', req),
         invertSelection: () => t.postFF('invert_selection'),
         isDirty: () => t.request('is_dirty'),
@@ -1877,6 +1892,7 @@ export function makeApi(t: Transport): EngineApi {
         startPreview: (req) => t.postFF('start_preview', req),
         startSaveDocument: (req) => t.request('start_save_document', req),
         strokeTo: (req) => t.postFF('stroke_to', req),
+        suppressHistory: (req) => t.postFF('suppress_history', req),
         takeTransformSetupError: () => t.request('take_transform_setup_error'),
         textObjects: (req) => t.request('text_objects', req),
         undo: () => t.postFF('undo'),

@@ -14,6 +14,14 @@ use crate::gpu::view::{ViewParams, ViewTransform};
 use crate::layer::LayerId;
 use crate::undo::GpuRegionAction;
 
+/// Undo/redo stack depths for `history_status`.
+#[derive(Clone, Debug, serde::Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+pub struct HistoryStatus {
+    pub undo: usize,
+    pub redo: usize,
+}
+
 /// Which surface the color picker samples from. Type-owned dispatch via
 /// `resolve`: `pick_color` never matches on the variant.
 #[derive(Copy, Clone, Debug)]
@@ -310,7 +318,9 @@ impl DarklyEngine {
                                 &commit.snapshot,
                                 rect,
                             );
-                            self.push_undo(Box::new(GpuRegionAction::new(entry)));
+                            // Deferred commit of an already-begun stroke —
+                            // bypasses `history_suppressed` like the flush.
+                            self.push_undo_recorded(Box::new(GpuRegionAction::new(entry)));
                         }
                     }
                     // else: textures identical, no undo entry needed.
@@ -825,6 +835,39 @@ impl DarklyEngine {
     pub fn redo(&mut self) {
         self.auto_commit_floating();
         self.apply_undo(UndoDirection::Redo);
+    }
+
+    /// Drop all undo/redo history — the undo baseline becomes "now".
+    /// Embedding hosts call this after programmatic scaffolding so
+    /// user-facing undo never eats setup ops; mirrors the fresh stack
+    /// a document load installs.
+    #[handler]
+    pub fn clear_history(&mut self) {
+        // A just-ended stroke's deferred commit would otherwise land on
+        // the fresh stack at the next flush — drop it so its pixels are
+        // baseline too.
+        self.pending_undo_commit = None;
+        self.drain_undo_for_teardown();
+    }
+
+    /// While `on`, mutations apply but record no undo entry — for
+    /// host-driven view sync (onion-skin ghosts, frame visibility)
+    /// that must not surface in artist history. Deferred commits of
+    /// already-begun strokes still land. The flag itself isn't
+    /// undoable and resets on document load (it's engine state).
+    #[handler]
+    pub fn suppress_history(&mut self, on: bool) {
+        self.history_suppressed = on;
+    }
+
+    /// Undo/redo stack depths — for "can I undo?" affordances (greyed
+    /// buttons, skipped no-op presses) and diagnostics.
+    #[handler]
+    pub fn history_status(&self) -> HistoryStatus {
+        HistoryStatus {
+            undo: self.undo_stack.undo_len(),
+            redo: self.undo_stack.redo_len(),
+        }
     }
 
     fn apply_undo(&mut self, direction: UndoDirection) {

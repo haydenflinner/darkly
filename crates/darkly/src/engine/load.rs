@@ -546,6 +546,9 @@ fn install_staging(
         channel.clear();
     }
     engine.undo_stack = crate::undo::UndoStack::new(50);
+    // A stale suppression window must not bleed into the new doc —
+    // its view-sync ops target ids that may not even exist here.
+    engine.history_suppressed = false;
     engine.thumbnail_cache = super::ThumbnailCache::new();
     engine.thumbnail_version = engine.thumbnail_version.wrapping_add(1);
 

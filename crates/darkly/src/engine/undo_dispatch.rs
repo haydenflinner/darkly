@@ -21,6 +21,20 @@ impl DarklyEngine {
     /// undoes the duplicate.
     pub(crate) fn push_undo(&mut self, action: Box<dyn UndoAction>) {
         self.flush_pending_undo_commit();
+        if self.history_suppressed {
+            // The mutation already happened — only the record is
+            // skipped. Redo history survives: a suppressed view-sync op
+            // isn't fresh work that should invalidate a redo chain.
+            return;
+        }
+        self.push_undo_recorded(action);
+    }
+
+    /// Push without consulting `history_suppressed`. The deferred
+    /// stroke commit goes through here: it's bookkeeping for a stroke
+    /// that already began, not a new action, so a suppression window
+    /// must not drop it.
+    pub(crate) fn push_undo_recorded(&mut self, action: Box<dyn UndoAction>) {
         let evicted = self.undo_stack.push(&mut self.doc, action);
         for mut e in evicted {
             e.on_evict(&mut self.compositor);
@@ -31,6 +45,9 @@ impl DarklyEngine {
     /// actions that may merge into the existing top step.
     pub(crate) fn coalesce_property_undo(&mut self, action: PropertyAction) {
         self.flush_pending_undo_commit();
+        if self.history_suppressed {
+            return;
+        }
         let evicted = self.undo_stack.coalesce_property(&mut self.doc, action);
         for mut e in evicted {
             e.on_evict(&mut self.compositor);
