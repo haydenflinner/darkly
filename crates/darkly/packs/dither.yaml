@@ -1,0 +1,8 @@
+name: Dither
+description: "One-bit screens pinned to the page: ordered dither, checker, scanlines, dashes, and speckle for pixel work."
+icon: mdi:grain
+palette:
+  chroma: "#7f7f7f"
+  refraction: "#c8c8c8"
+  surface: "#6e6e6e1a"
+members: [checker, dashes, diagonals, dither, dot_grid, grid, scanlines, speckle]

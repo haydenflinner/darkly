@@ -1902,6 +1902,86 @@ fn pattern_dots_emit_cell_centred_distance() {
     naga_validate(&compiled.stroke_wgsl, "pattern dots stroke_wgsl");
 }
 
+/// The Checker branch fills cells by index parity: `floor` on both axes
+/// and a square-in-cell distance, feathered by the same `band`.
+#[test]
+fn pattern_checker_emits_cell_parity() {
+    let reg = registry();
+    let mut graph = Graph::<BrushWireType>::new();
+    let pen = graph.add_node("pen_input", reg.get("pen_input").unwrap().ports.clone());
+    let paint_color = graph.add_node("paint_color", reg.get("paint_color").unwrap().ports.clone());
+    let pat = graph.add_node("pattern", reg.get("pattern").unwrap().ports.clone());
+    graph
+        .set_port_value(&pat, "algorithm", InputValue::Int(2))
+        .unwrap();
+    let stamp = graph.add_node("stamp", reg.get("stamp").unwrap().ports.clone());
+    let term = graph.add_node("paint", reg.get("paint").unwrap().ports.clone());
+    wire(
+        &mut graph,
+        &[
+            (pen.clone(), "position", term.clone(), "position"),
+            (paint_color.clone(), "color", stamp.clone(), "color"),
+            (pat.clone(), "mask", stamp.clone(), "tip"),
+            (stamp.clone(), "dab", term.clone(), "rgba"),
+        ],
+    );
+    let plan = compile(&graph, reg.as_map()).unwrap();
+    let compiled =
+        compile_brush_to_wgsl(&graph, &plan, &evals()).expect("pattern checker compiles");
+    let w = &compiled.stroke_wgsl;
+    assert!(
+        w.contains("floor("),
+        "checker must index cells with floor:\n{w}"
+    );
+    assert!(
+        w.contains(" - 2.0 * floor("),
+        "checker must parity the cell index sum:\n{w}"
+    );
+    naga_validate(w, "pattern checker stroke_wgsl");
+}
+
+/// The Ordered branch is the 4×4 Bayer matrix evaluated as bit ops:
+/// cell indices on both axes and a tone threshold compare.
+#[test]
+fn pattern_ordered_emits_bayer_threshold() {
+    let reg = registry();
+    let mut graph = Graph::<BrushWireType>::new();
+    let pen = graph.add_node("pen_input", reg.get("pen_input").unwrap().ports.clone());
+    let paint_color = graph.add_node("paint_color", reg.get("paint_color").unwrap().ports.clone());
+    let pat = graph.add_node("pattern", reg.get("pattern").unwrap().ports.clone());
+    graph
+        .set_port_value(&pat, "algorithm", InputValue::Int(3))
+        .unwrap();
+    let stamp = graph.add_node("stamp", reg.get("stamp").unwrap().ports.clone());
+    let term = graph.add_node("paint", reg.get("paint").unwrap().ports.clone());
+    wire(
+        &mut graph,
+        &[
+            (pen.clone(), "position", term.clone(), "position"),
+            (paint_color.clone(), "color", stamp.clone(), "color"),
+            (pat.clone(), "mask", stamp.clone(), "tip"),
+            (stamp.clone(), "dab", term.clone(), "rgba"),
+        ],
+    );
+    let plan = compile(&graph, reg.as_map()).unwrap();
+    let compiled =
+        compile_brush_to_wgsl(&graph, &plan, &evals()).expect("pattern ordered compiles");
+    let w = &compiled.stroke_wgsl;
+    assert!(
+        w.contains("i32(floor("),
+        "ordered must take integer cell indices:\n{w}"
+    );
+    assert!(
+        w.contains(">> 1"),
+        "ordered must recurse the Bayer matrix one bit up:\n{w}"
+    );
+    assert!(
+        w.contains("/ 16.0"),
+        "ordered must normalise the 4x4 matrix threshold:\n{w}"
+    );
+    naga_validate(w, "pattern ordered stroke_wgsl");
+}
+
 /// `space` selects the field anchor: Canvas samples `target_pos` (the
 /// screen is glued to the page, so overlapping dabs share one grid);
 /// Dab rebuilds the oriented `local_uv` frame so the pattern travels with

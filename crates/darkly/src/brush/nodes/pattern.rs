@@ -1,5 +1,6 @@
-//! Procedural pattern coverage GPU node: parallel lines (hatching) or a
-//! dot screen (halftone) inside the dab.
+//! Procedural pattern coverage GPU node: parallel lines (hatching), a
+//! dot screen (halftone), a checkerboard, or an ordered (Bayer) dither
+//! inside the dab.
 //!
 //! Compile-only: contributes a per-fragment scalar coverage expression
 //! (`f32` in `[0, 1]`) to the brush's compiled WGSL via [`compile_wgsl`],
@@ -28,10 +29,11 @@ use crate::nodegraph::{NodeRegistration, PortDef, UnitType};
 
 // ── Node ────────────────────────────────────────────────────────────────
 
-/// Algorithm-selector index for the lines field. Must match the `options`
-/// order in `register()` and the branch order in
-/// [`PatternEvaluator::compile_wgsl`].
+/// Algorithm-selector indices. Must match the `options` order in
+/// `register()` and the branch order in [`PatternEvaluator::compile_wgsl`].
 const ALGO_LINES: i32 = 0;
+const ALGO_CHECKER: i32 = 2;
+const ALGO_ORDERED: i32 = 3;
 
 pub const TYPE_ID: &str = "pattern";
 
@@ -45,14 +47,17 @@ pub fn register() -> BrushNodeRegistration {
             type_id: TYPE_ID,
             category: "shape",
             display_name: "Pattern",
-            description: "Procedural line or dot screen: hatched stripes or a halftone dot grid inside the dab.",
+            description: "Procedural pattern screen: hatched stripes, a halftone dot grid, a checkerboard, or an ordered dither inside the dab.",
             ports: vec![
                 // Compile-time branch selector: which field the node emits.
                 PortDef::input("algorithm", BrushWireType::Enum)
-                    .with_enum_options(["Lines", "Dots"])
+                    .with_enum_options(["Lines", "Dots", "Checker", "Ordered"])
                     .with_value(InputValue::Int(0))
                     .with_label("Algorithm")
-                    .with_description("Field to stamp: parallel lines for hatching, or a dot screen for halftone."),
+                    .with_description(
+                        "Field to stamp: parallel lines for hatching, a dot screen for halftone, \
+                         a checkerboard, or a 4×4 Bayer ordered dither.",
+                    ),
                 // Field anchor, shared convention with `noise`/`image`.
                 // Canvas pins the screen to the page (dabs reveal one
                 // coherent grid); Dab locks it to the stamp.
@@ -82,8 +87,9 @@ pub fn register() -> BrushNodeRegistration {
                     .with_unit(UnitType::Percent)
                     .with_icon("fa6-solid:pen")
                     .with_description(
-                        "How much of each cell fills: line width for hatching, dot diameter for the screen. \
-                         Wire pressure here for tone that grows with the press.",
+                        "How much of each cell fills: line width for hatching, dot diameter for the screen, \
+                         square size for checker (100% tiles a full checkerboard), fill order for \
+                         ordered dither (the tone). Wire pressure here for tone that grows with the press.",
                     ),
                 // A second, perpendicular line set blended over the first:
                 // single-stroke crosshatching. 0% leaves a pure comb.
@@ -208,16 +214,43 @@ impl BrushNodeEvaluator for PatternEvaluator {
              \x20   let {ident}_th: f32 = clamp(({thickness}), 0.0, 1.0);\n\
              \x20   let {ident}_band: f32 = max(clamp(({softness}), 0.0, 1.0), 0.02) * 0.5 / {ident}_f;\n"
         ));
-        // Stripe coverage: distance to the nearest stripe centreline in
-        // coordinate units, feathered by `band`. `cross` blends in the
-        // perpendicular set for single-stroke crosshatching.
-        body.push_str(&format!(
-            "    let {ident}_ls: f32 = smoothstep(0.0, {ident}_band, ({ident}_th * 0.5 - abs(fract({ident}_s * {ident}_f) - 0.5)) / {ident}_f);\n"
-        ));
         if algorithm == ALGO_LINES {
+            // Stripe coverage: distance to the nearest stripe centreline
+            // in coordinate units, feathered by `band`. `cross` blends in
+            // the perpendicular set for single-stroke crosshatching.
             body.push_str(&format!(
-                "    let {ident}_lq: f32 = smoothstep(0.0, {ident}_band, ({ident}_th * 0.5 - abs(fract({ident}_q * {ident}_f) - 0.5)) / {ident}_f);\n\
+                "    let {ident}_ls: f32 = smoothstep(0.0, {ident}_band, ({ident}_th * 0.5 - abs(fract({ident}_s * {ident}_f) - 0.5)) / {ident}_f);\n\
+                 \x20   let {ident}_lq: f32 = smoothstep(0.0, {ident}_band, ({ident}_th * 0.5 - abs(fract({ident}_q * {ident}_f) - 0.5)) / {ident}_f);\n\
                  \x20   let {ident}: f32 = max({ident}_ls, clamp(({cross}), 0.0, 1.0) * {ident}_lq);\n"
+            ));
+        } else if algorithm == ALGO_CHECKER {
+            // Cell-parity checkerboard: a cell is solid when its index sum
+            // is even. `thickness` is the filled square's share of its
+            // cell — 100% tiles a full checker, less leaves staggered
+            // squares marching in checker order.
+            body.push_str(&format!(
+                "    let {ident}_cs: f32 = floor({ident}_s * {ident}_f);\n\
+                 \x20   let {ident}_cq: f32 = floor({ident}_q * {ident}_f);\n\
+                 \x20   let {ident}_par: f32 = 1.0 - ({ident}_cs + {ident}_cq - 2.0 * floor(({ident}_cs + {ident}_cq) * 0.5));\n\
+                 \x20   let {ident}_sq: f32 = ({ident}_th * 0.5 - max(abs(fract({ident}_s * {ident}_f) - 0.5), abs(fract({ident}_q * {ident}_f) - 0.5))) / {ident}_f;\n\
+                 \x20   let {ident}: f32 = {ident}_par * smoothstep(0.0, {ident}_band, {ident}_sq);\n"
+            ));
+        } else if algorithm == ALGO_ORDERED {
+            // 4×4 Bayer ordered dither: `thickness` is the tone — the
+            // share of the matrix's 16 cells filled. Cells fill in the
+            // dispersed order the matrix numbers, so tone sweeps sparse
+            // dots → checkerboard → near-solid without ever clumping.
+            // M(x,y) = 4·B2(x&1, y&1) + B2(x>>1, y>>1) with
+            // B2(a,b) = 2·(a^b) + b; bit ops wrap negatives mod 4 the
+            // way the matrix tiles.
+            body.push_str(&format!(
+                "    let {ident}_bx: i32 = i32(floor({ident}_s * {ident}_f));\n\
+                 \x20   let {ident}_by: i32 = i32(floor({ident}_q * {ident}_f));\n\
+                 \x20   let {ident}_lo: i32 = 2 * (({ident}_bx ^ {ident}_by) & 1) + ({ident}_by & 1);\n\
+                 \x20   let {ident}_hi: i32 = 2 * ((({ident}_bx >> 1) ^ ({ident}_by >> 1)) & 1) + (({ident}_by >> 1) & 1);\n\
+                 \x20   let {ident}_thr: f32 = (f32(4 * {ident}_lo + {ident}_hi) + 0.5) / 16.0;\n\
+                 \x20   let {ident}_aa: f32 = max(({softness}), 0.01) * 0.125;\n\
+                 \x20   let {ident}: f32 = smoothstep({ident}_thr, {ident}_thr + {ident}_aa, {ident}_th);\n"
             ));
         } else {
             // Dot screen: distance to the cell centre in coordinate units,
