@@ -13,7 +13,10 @@ publish = false
 crate-type = ["cdylib"]
 
 [features]
+default = ["bundled-assets"]
 profile = ["darkly/profile"]
+# See the `darkly` crate's feature of the same name.
+bundled-assets = ["darkly/bundled-assets"]
 
 [dependencies]
 darkly = { workspace = true }

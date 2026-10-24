@@ -11,7 +11,14 @@ keywords = ["paint", "gpu", "webgpu", "graphics", "wgpu"]
 categories = ["graphics", "rendering", "wasm"]
 
 [features]
+default = ["bundled-assets"]
 profile = []
+# Embeds the curated fonts and the named brush textures (paper grain) into
+# the binary, so text and textured brushes work with no further setup. A host
+# that would rather not ship them in its wasm module turns this off and
+# delivers the same bytes at runtime through the `register_font` and
+# `register_texture` requests, before text or a textured brush is first used.
+bundled-assets = []
 # Enables blocking GPU readbacks, `gpu::test_utils`, and `*::test_readback_*`
 # accessors. WebGPU/WASM deadlocks on these (see CONTRIBUTING.md "No Blocking GPU
 # Readbacks"); the feature exists so `cargo test` and the bench bins can opt

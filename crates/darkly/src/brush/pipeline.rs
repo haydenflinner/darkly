@@ -662,6 +662,21 @@ impl BrushPipelines {
         &self.texture_registry
     }
 
+    /// Decode an encoded image (PNG / JPG / WebP) and register it under
+    /// `name` for graph `image` nodes. Brushes built afterwards resolve it;
+    /// returns whether the name is now registered.
+    pub fn register_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        name: &str,
+        bytes: &[u8],
+    ) -> bool {
+        self.texture_registry
+            .register_image(device, queue, name, bytes);
+        self.texture_registry.contains(name)
+    }
+
     /// Cache of baked procedural noise tiles. Resolved alongside the
     /// texture registry when a brush's `@group(3)` bind group is built.
     pub fn baked_sources(&self) -> &crate::gpu::baked_source_cache::BakedSourceCache {

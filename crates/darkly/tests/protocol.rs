@@ -41,6 +41,26 @@ fn registry_routes_every_kind_and_rejects_unknown() {
     );
 }
 
+/// `register_texture` is the runtime delivery path for named brush textures
+/// (the built-ins, when a host builds without `bundled-assets`): an encoded
+/// image registers under its name, undecodable bytes are an engine error.
+#[test]
+fn register_texture_registers_a_decodable_image_by_name() {
+    let reg = RequestRegistry::new();
+    let mut engine = test_engine(64, 64);
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 180, 160, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    reg.dispatch(&mut engine, "register_texture", json!({ "name": "grain" }), &png)
+        .unwrap();
+    assert!(engine.brush_texture_registered("grain"));
+
+    reg.dispatch(&mut engine, "register_texture", json!({ "name": "junk" }), b"not an image")
+        .unwrap_err();
+    assert!(!engine.brush_texture_registered("junk"));
+}
+
 #[test]
 fn add_raster_dispatch_adds_a_layer_and_returns_id() {
     let reg = RequestRegistry::new();

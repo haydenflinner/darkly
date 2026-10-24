@@ -945,6 +945,26 @@ impl DarklyEngine {
             .auto_layout_with_sizes(sizes)
     }
 
+    /// Register an encoded image as the named brush texture `name` (the
+    /// `texture_name` a graph `image` node samples). The runtime delivery
+    /// path for the built-in textures when the `bundled-assets` feature is
+    /// off; a brush that names a texture must load after it is registered.
+    pub fn register_texture(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        if self
+            .brush_pipelines
+            .register_texture(&self.gpu.device, &self.gpu.queue, name, bytes)
+        {
+            Ok(())
+        } else {
+            Err(format!("texture `{name}` could not be decoded"))
+        }
+    }
+
+    /// Whether a brush texture is registered under `name`.
+    pub fn brush_texture_registered(&self, name: &str) -> bool {
+        self.brush_pipelines.texture_registry().contains(name)
+    }
+
     /// Upload an RGBA8 image and associate it with a resource name.
     ///
     /// Image-stamp brushes are unsupported: `stamp` only accepts

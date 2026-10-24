@@ -937,6 +937,8 @@ export type PrimIn = { kind: number, flags: number, p0: [number, number], p1: [n
 
 export type RefreshBrushCursorPreviewReq = { x: number, y: number, pressure: number, tilt_x: number, tilt_y: number, rotation: number, tangential_pressure: number, };
 
+export type RegisterTextureReq = { name: string, };
+
 export type RemoveLayerReq = { id: number, };
 
 export type RemoveLayersReq = { ids: Array<number>, };
@@ -1225,6 +1227,7 @@ export type RequestKind =
     | 'redo'
     | 'refresh_brush_cursor_preview'
     | 'register_font'
+    | 'register_texture'
     | 'remove_layer'
     | 'remove_layers'
     | 'remove_mask'
@@ -1428,6 +1431,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'redo',
     'refresh_brush_cursor_preview',
     'register_font',
+    'register_texture',
     'remove_layer',
     'remove_layers',
     'remove_mask',
@@ -1639,6 +1643,7 @@ export interface EngineApi {
     redo(): void;
     refreshBrushCursorPreview(req: RefreshBrushCursorPreviewReq): Promise<BrushCursorPreviewInfoResp | null>;
     registerFont(bytes: Uint8Array): Promise<{ families: string[] }>;
+    registerTexture(req: RegisterTextureReq, bytes: Uint8Array): Promise<void>;
     removeLayer(req: RemoveLayerReq): Promise<null>;
     removeLayers(req: RemoveLayersReq): Promise<number>;
     removeMask(req: RemoveMaskReq): void;
@@ -1844,6 +1849,7 @@ export function makeApi(t: Transport): EngineApi {
         redo: () => t.postFF('redo'),
         refreshBrushCursorPreview: (req) => t.request('refresh_brush_cursor_preview', req),
         registerFont: (bytes) => t.request('register_font', {}, bytes),
+        registerTexture: (req, bytes) => t.request('register_texture', req, bytes),
         removeLayer: (req) => t.request('remove_layer', req),
         removeLayers: (req) => t.request('remove_layers', req),
         removeMask: (req) => t.postFF('remove_mask', req),

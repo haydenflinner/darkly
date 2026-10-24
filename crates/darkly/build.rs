@@ -739,8 +739,11 @@ fn generate_builtin_packs(dir: &Path, catalog_sources: &mut Vec<(String, String)
 /// (`.foo.png-autosave.kra`) won't get registered as textures.
 fn generate_texture_registry(dir: &Path) {
     let mut textures: Vec<(String, PathBuf)> = Vec::new();
+    // Without `bundled-assets` the table is empty: the host registers the
+    // same images at runtime (`register_texture`).
+    let bundled = env::var_os("CARGO_FEATURE_BUNDLED_ASSETS").is_some();
 
-    if let Ok(entries) = fs::read_dir(dir) {
+    if let Some(entries) = fs::read_dir(dir).ok().filter(|_| bundled) {
         for entry in entries.flatten() {
             let path = entry.path();
             let stem = path

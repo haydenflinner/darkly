@@ -54,6 +54,7 @@ pub struct FontCapabilities {
 /// `FontStyle::Italic` (synthesis would be poor). OS-font enumeration (fontique
 /// does it for free on native) and artist upload are additive behind this same
 /// registry.
+#[cfg(feature = "bundled-assets")]
 const BUNDLED_FONTS: &[&[u8]] = &[
     include_bytes!("../../resources/fonts/NotoSans-VF.ttf"),
     include_bytes!("../../resources/fonts/NotoSans-Italic-VF.ttf"),
@@ -66,6 +67,11 @@ const BUNDLED_FONTS: &[&[u8]] = &[
     include_bytes!("../../resources/fonts/NotoSansSymbols-Regular.ttf"),
     include_bytes!("../../resources/fonts/NotoSansSymbols2-Regular.ttf"),
 ];
+
+/// Without `bundled-assets` the host registers these same faces at runtime
+/// (`register_font`); until it does, text shapes against an empty collection.
+#[cfg(not(feature = "bundled-assets"))]
+const BUNDLED_FONTS: &[&[u8]] = &[];
 
 /// The platform-agnostic font collection plus parley's reusable layout state.
 /// Owned by the engine; the shaping/scene-build methods take `&mut self` because
@@ -482,6 +488,7 @@ mod tests {
     /// system-installed Noto Sans would otherwise supply an italic face and mask
     /// a missing bundled one, which is exactly the gap that bites in the browser.
     #[test]
+    #[cfg(feature = "bundled-assets")]
     fn bundled_noto_provides_an_italic_face() {
         use parley::fontique::{Collection, CollectionOptions, FontStyle};
         let mut collection = Collection::new(CollectionOptions {
@@ -515,6 +522,7 @@ mod tests {
     /// collection (wasm has no system fonts; a native system font would mask a
     /// missing bundled one) and assert none shape to glyph id 0 (.notdef).
     #[test]
+    #[cfg(feature = "bundled-assets")]
     fn bundled_fallback_covers_the_basic_symbols() {
         use parley::fontique::{Collection, CollectionOptions};
         use parley::{FontContext, LayoutContext};

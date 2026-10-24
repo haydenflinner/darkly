@@ -21,7 +21,7 @@ repository = "https://github.com/darkly-art/darkly"
 # no version requirement at all. The version here is vestigial in the same way
 # the crates' own versions are (see docs/versioning.md); the release workflow
 # rewrites all three to the tag being published.
-darkly = { path = "crates/darkly" }
+darkly = { path = "crates/darkly", default-features = false }
 darkly-macros = { path = "crates/darkly-macros", version = "0.1.0" }
 
 # Proc-macro toolchain (the `#[handlers]` engine-bridge macro + build.rs scan)

@@ -67,6 +67,14 @@ pub struct BrushUploadImageReq {
     pub height: u32,
 }
 
+/// `{ name }`: the texture name graph `image` nodes refer to. The encoded
+/// image (PNG / JPG / WebP) rides the binary side-channel.
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+pub struct RegisterTextureReq {
+    pub name: String,
+}
+
 pub fn registrations() -> Vec<RequestRegistration> {
     vec![
         RequestRegistration::new("brush_graph_reset", |engine, _payload, _b| {
@@ -148,6 +156,16 @@ pub fn registrations() -> Vec<RequestRegistration> {
         .send()
         .bytes_in()
         .req::<BrushUploadImageReq>(),
+        RequestRegistration::new("register_texture", |engine, payload, bytes| {
+            let r: RegisterTextureReq = decode(payload)?;
+            engine
+                .register_texture(&r.name, bytes)
+                .map_err(ProtocolError::engine)?;
+            Ok(Response::empty())
+        })
+        .send()
+        .bytes_in()
+        .req::<RegisterTextureReq>(),
         RequestRegistration::new("brush_graph_default", |engine, _payload, _b| {
             Ok(Response::json(
                 serde_json::to_value(engine.default_brush_graph()).map_err(bad_payload)?,
