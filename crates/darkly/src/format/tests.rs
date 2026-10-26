@@ -942,6 +942,28 @@ fn dirty_flag_cleared_by_open() {
     );
 }
 
+/// A save in flight when a document is opened belonged to the old one:
+/// the open drops it, and the next save runs instead of being refused
+/// as already in flight.
+#[test]
+fn open_drops_a_save_in_flight() {
+    let (canvas_w, canvas_h) = (32u32, 32u32);
+
+    let mut original = kitchen_sink_engine(canvas_w, canvas_h);
+    populate_kitchen_sink(&mut original);
+    let zip_bytes = assemble_zip(&drive_save_to_completion(&mut original));
+
+    let mut reloaded = kitchen_sink_engine(canvas_w, canvas_h);
+    reloaded
+        .start_save_document(crate::engine::SavePurpose::Snapshot)
+        .expect("start save");
+    reloaded
+        .open_document(&zip_bytes)
+        .expect("kitchen-sink reload happy path");
+    assert!(reloaded.poll_save_result().is_none());
+    drive_save_to_completion(&mut reloaded);
+}
+
 /// Runtime guard that the kitchen sink actually instantiates every
 /// closed-set variant in every registry. Adding a new blend mode /
 /// layer kind / filter kind without extending `populate_kitchen_sink`

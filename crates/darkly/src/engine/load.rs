@@ -497,6 +497,10 @@ fn install_staging(
     // slotmap entries. Done before the doc swap so the cancel sees the
     // old context types correctly.
     engine.readbacks.cancel(|_| true);
+    // A save started against the previous document lost its readbacks
+    // with that cancel and can never complete; it goes too, or every
+    // later save is refused as already in flight.
+    engine.active_save_job = None;
 
     // The compositor caches a lot keyed off the old document's
     // slotmap. Building a fresh one is the simplest correct route:
