@@ -419,8 +419,12 @@ Merge pull request #113 from darkly-art/radial-widget
     /// `packaging` job is the one that fires before the tag exists.
     #[test]
     fn newest_snapshot_entry_is_not_older_than_the_built_tag() {
-        let built = built_tag(crate::VERSION).expect("VERSION has the describe shape");
-        // The tagless fallback stamps `0.0.0`, which any snapshot satisfies.
+        // No parseable release tag — a non-`v*` tag or the tagless fallback —
+        // means this build claims no version, so there is nothing for the
+        // snapshot to keep up with.
+        let Some(built) = built_tag(crate::VERSION) else {
+            return;
+        };
         let newest = releases().first().map(Release::parsed_version);
         assert!(
             newest >= Some(built),

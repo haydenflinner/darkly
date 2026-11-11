@@ -849,6 +849,69 @@ fn sub_canvas_mask_survives_save_load_round_trip() {
     );
 }
 
+/// Regression: a save requested while a flood fill's readback is still
+/// in flight must defer, not snapshot the pre-fill texture. Without a
+/// drain between `end_stroke` and `start_save_document` the fill task
+/// is provably pending, so this exercises the deferred path
+/// deterministically — the old failure mode was the saved blob coming
+/// back all zeros when the copy beat the fill's completion stamp.
+#[test]
+fn save_defers_while_a_flood_fill_is_in_flight() {
+    use crate::engine::types::StrokeOp;
+    use crate::engine::{SaveError, SavePurpose};
+
+    let mut engine = kitchen_sink_engine(16, 16);
+    let layer = engine.add_raster_layer(None);
+    engine.begin_stroke(layer).unwrap();
+    engine.stroke_to(StrokeOp::FloodFill {
+        x: 1.0,
+        y: 1.0,
+        r: 200,
+        g: 100,
+        b: 50,
+        a: 255,
+        tolerance: 255,
+    });
+    engine.end_stroke();
+
+    engine
+        .start_save_document(SavePurpose::File)
+        .expect("start save");
+    assert!(
+        engine.deferred_save_purpose.is_some(),
+        "save must defer while a mutating readback is in flight"
+    );
+    assert!(
+        matches!(
+            engine.start_save_document(SavePurpose::File),
+            Err(SaveError::InProgress)
+        ),
+        "a deferred save still counts as in flight"
+    );
+
+    let bundle = (0..32)
+        .find_map(|_| {
+            engine.test_flush_readbacks();
+            engine.render(0.0);
+            engine.poll_save_result()
+        })
+        .expect("deferred save completes within 32 frames");
+
+    // The blob carries the stamped fill, byte-for-byte what the layer's
+    // texture holds — not the empty pre-fill snapshot.
+    let host_pixels = engine.test_readback_layer(layer);
+    let blob = bundle
+        .blobs
+        .iter()
+        .find(|b| b.path.ends_with(".pixels"))
+        .expect("a layer pixel blob");
+    assert_eq!(blob.bytes, host_pixels);
+    assert!(
+        host_pixels.iter().all(|b| *b != 0),
+        "a full-coverage fill must leave no zero bytes"
+    );
+}
+
 /// Regression: after `open_document`, the layer panel must show
 /// thumbnails immediately, not wait until the artist's first edit.
 ///

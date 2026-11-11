@@ -151,6 +151,10 @@ pub(crate) struct PendingUndoCommit {
 /// All variants carry a `node_id` (where applicable) that may refer to either
 /// a raster layer or a mask filter; the format is derived from the node's
 /// [`PixelBuffer`] when the readback completes.
+///
+/// New variants gate pending saves by default — see
+/// [`ReadbackContext::mutates_saved_pixels`]; opt out there only when the
+/// completion provably can't write saved pixels.
 pub(crate) enum ReadbackContext {
     FloodFill {
         node_id: LayerId,
@@ -333,24 +337,44 @@ pub(crate) enum ReadbackContext {
 }
 
 impl ReadbackContext {
-    /// True when this readback's completion handler mutates saved pixel
-    /// content — a layer/mask texture or the selection — so a save that
-    /// copies sources while one is in flight snapshots pre-mutation data.
+    /// True when this readback's completion handler can mutate saved
+    /// pixel content — a layer/mask texture or the selection — so a save
+    /// that copies sources while one is in flight would snapshot
+    /// pre-mutation data.
     ///
-    /// `FloodFill` stamps the target texture; `MagicWand` and
+    /// **Default-deny:** the match lists the variants *proven* read-only
+    /// and everything else gates a save. A new variant added without
+    /// thought lands on the safe side — the save defers a frame or two
+    /// — rather than silently racing a pixel write. The mutating set
+    /// today: `FloodFill` stamps the target texture; `MagicWand` and
     /// `AlphaToSelection` rewrite the selection (itself a saved blob);
     /// `SelectionReadback` resumes ops deferred on selection bounds
-    /// (flip, filter, copy, transform) whose GPU writes submit during its
-    /// handler. Cut clears its region at request time, so `Copy` reads a
-    /// settled texture; all preview/export/thumbnail variants are
-    /// read-only.
+    /// (flip, filter, copy, transform) whose GPU writes submit during
+    /// its handler.
+    ///
+    /// The read-only arms, and why each is settled at request time or
+    /// writes nothing saved: `Copy` — a cut's clear submits at request
+    /// time; `SaveDocument` — the save's own readbacks; `UndoRegionReady`
+    /// — fills a host-heap undo cell, not a texture; the rest write
+    /// only session caches (picks, previews, thumbnails, exports,
+    /// recording frames).
     pub(crate) fn mutates_saved_pixels(&self) -> bool {
-        matches!(
+        !matches!(
             self,
-            ReadbackContext::FloodFill { .. }
-                | ReadbackContext::MagicWand { .. }
-                | ReadbackContext::AlphaToSelection { .. }
-                | ReadbackContext::SelectionReadback
+            ReadbackContext::ColorPick
+                | ReadbackContext::Copy { .. }
+                | ReadbackContext::ExportImage { .. }
+                | ReadbackContext::SaveDocument { .. }
+                | ReadbackContext::Thumbnail { .. }
+                | ReadbackContext::BrushStrokePreview { .. }
+                | ReadbackContext::BrushThumbnailForSave { .. }
+                | ReadbackContext::BrushDabThumbnail { .. }
+                | ReadbackContext::ActiveBrushDab { .. }
+                | ReadbackContext::NodePreview { .. }
+                | ReadbackContext::BrushCursorPreviewScale { .. }
+                | ReadbackContext::UndoRegionReady { .. }
+                | ReadbackContext::PreviewFrame { .. }
+                | ReadbackContext::RecordingFrame { .. }
         )
     }
 }
