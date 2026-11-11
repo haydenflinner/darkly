@@ -133,8 +133,20 @@ impl DarklyEngine {
     /// [`SavePurpose::File`] does (the file matches disk), while an
     /// autosave [`SavePurpose::Snapshot`] leaves it untouched.
     pub fn start_save_document(&mut self, purpose: SavePurpose) -> Result<(), SaveError> {
-        if self.active_save_job.is_some() {
+        if self.active_save_job.is_some() || self.deferred_save_purpose.is_some() {
             return Err(SaveError::InProgress);
+        }
+
+        // Defer while a readback whose completion writes saved pixels is
+        // in flight (flood fill, wand/alpha-to-selection, or a
+        // `SelectionReadback` resuming a deferred op): encoding the blob
+        // copies now would snapshot the pre-mutation textures and the
+        // saved file would silently drop the pending edit. The deferred
+        // request promotes to a real job at the next readback drain once
+        // the mutation lands, so copies capture settled textures.
+        if self.readbacks.any(|ctx| ctx.mutates_saved_pixels()) {
+            self.deferred_save_purpose = Some(purpose);
+            return Ok(());
         }
 
         let (manifest, pixel_blobs, font_blobs) = build_manifest(self);
@@ -217,7 +229,7 @@ impl DarklyEngine {
         // Advance any in-flight GPU readbacks (non-blocking) so a save can
         // complete without a full render/present. Harmless no-op when the
         // frame loop already drained this frame.
-        if self.active_save_job.is_some() {
+        if self.active_save_job.is_some() || self.deferred_save_purpose.is_some() {
             self.drain_readbacks();
         }
         let job = self.active_save_job.as_ref()?;
@@ -252,6 +264,23 @@ impl DarklyEngine {
             composite_rgba,
             blobs,
         })
+    }
+
+    /// Promote a deferred save request ([`Self::deferred_save_purpose`])
+    /// to a real [`SaveJob`] once no readback whose completion writes
+    /// saved pixels remains in flight. Called from
+    /// [`Self::drain_readbacks`] so every drain path — frame loop,
+    /// `poll_save_result`, test flush — advances the gate identically.
+    pub(crate) fn pump_deferred_save(&mut self) {
+        let Some(purpose) = self.deferred_save_purpose else {
+            return;
+        };
+        if self.active_save_job.is_some() || self.readbacks.any(|ctx| ctx.mutates_saved_pixels()) {
+            return;
+        }
+        self.deferred_save_purpose = None;
+        // Cannot fail: no active job, no mutating readbacks pending.
+        let _ = self.start_save_document(purpose);
     }
 
     /// Dispatch from `handle_completed_readback`: populate the matching

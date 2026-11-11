@@ -332,6 +332,29 @@ pub(crate) enum ReadbackContext {
     },
 }
 
+impl ReadbackContext {
+    /// True when this readback's completion handler mutates saved pixel
+    /// content — a layer/mask texture or the selection — so a save that
+    /// copies sources while one is in flight snapshots pre-mutation data.
+    ///
+    /// `FloodFill` stamps the target texture; `MagicWand` and
+    /// `AlphaToSelection` rewrite the selection (itself a saved blob);
+    /// `SelectionReadback` resumes ops deferred on selection bounds
+    /// (flip, filter, copy, transform) whose GPU writes submit during its
+    /// handler. Cut clears its region at request time, so `Copy` reads a
+    /// settled texture; all preview/export/thumbnail variants are
+    /// read-only.
+    pub(crate) fn mutates_saved_pixels(&self) -> bool {
+        matches!(
+            self,
+            ReadbackContext::FloodFill { .. }
+                | ReadbackContext::MagicWand { .. }
+                | ReadbackContext::AlphaToSelection { .. }
+                | ReadbackContext::SelectionReadback
+        )
+    }
+}
+
 /// One picker preview generation: the chosen preview dimensions, the entry's
 /// own playback rate, and the per-frame RGBA slots, each filled when its async
 /// readback lands. `width` / `height` are carried so `poll_preview` and the WASM
@@ -665,6 +688,14 @@ pub struct DarklyEngine {
     /// `start_save_document` while this is `Some` errors with
     /// [`SaveError::InProgress`].
     pub(crate) active_save_job: Option<SaveJob>,
+    /// A save request deferred because a readback whose completion writes
+    /// saved pixels (flood fill, wand/alpha-to-selection, or a
+    /// `SelectionReadback` resuming a deferred op) was still in flight.
+    /// Starting the job would encode pixel copies of the pre-mutation
+    /// textures — the saved blobs would silently drop the pending edit.
+    /// `drain_readbacks` promotes this to a real job once the last
+    /// mutating readback lands, so the copies capture settled textures.
+    pub(crate) deferred_save_purpose: Option<SavePurpose>,
     pub(crate) thumbnail_cache: ThumbnailCache,
     /// Monotonic counter bumped each time a thumbnail readback lands in
     /// the cache. Mirrored to a Svelte-reactive epoch in the frontend so
@@ -825,6 +856,7 @@ impl DarklyEngine {
             last_picked_color: [0, 0, 0, 0],
             pending_export_result: None,
             active_save_job: None,
+            deferred_save_purpose: None,
             thumbnail_cache: ThumbnailCache::new(),
             thumbnail_version: 0,
             thumbnails_queued: std::collections::HashMap::new(),
@@ -1572,6 +1604,7 @@ impl DarklyEngine {
         for (ctx, pixels) in completed {
             self.handle_completed_readback(ctx, pixels);
         }
+        self.pump_deferred_save();
     }
 
     /// Total bytes all in-flight readback requests will map. Guards the

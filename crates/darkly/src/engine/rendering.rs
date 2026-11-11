@@ -361,13 +361,16 @@ impl DarklyEngine {
     /// `render()`/present (only the focused tab renders).
     pub(crate) fn drain_readbacks(&mut self) -> bool {
         let completed = self.readbacks.poll(&self.gpu.device);
-        if completed.is_empty() {
-            return false;
-        }
+        let landed = !completed.is_empty();
         for (ctx, pixels) in completed {
             self.handle_completed_readback(ctx, pixels);
         }
-        true
+        // A save deferred on mutating readbacks promotes once they settle
+        // — pump on every drain, including empty ones, so a cancellation
+        // that removed the blocking readback without dispatching it can't
+        // leave the gate blocked.
+        self.pump_deferred_save();
+        landed
     }
 
     /// Dispatch a completed readback to the appropriate handler. Shared

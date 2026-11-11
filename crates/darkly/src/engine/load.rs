@@ -499,8 +499,11 @@ fn install_staging(
     engine.readbacks.cancel(|_| true);
     // A save started against the previous document lost its readbacks
     // with that cancel and can never complete; it goes too, or every
-    // later save is refused as already in flight.
+    // later save is refused as already in flight. A deferred save
+    // request goes with it: it belonged to the old document, and the
+    // pump would otherwise fire a save of the just-loaded one.
     engine.active_save_job = None;
+    engine.deferred_save_purpose = None;
 
     // The compositor caches a lot keyed off the old document's
     // slotmap. Building a fresh one is the simplest correct route:
