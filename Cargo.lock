@@ -201,7 +201,6 @@ dependencies = [
  "serde_yaml_ng",
  "slotmap",
  "smallvec",
- "spline",
  "syn 3.0.6",
  "thiserror",
  "ts-rs",
@@ -745,8 +744,6 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 [[package]]
 name = "kurbo"
 version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2"
 dependencies = [
  "arrayvec",
  "euclid",
@@ -1084,8 +1081,6 @@ checksum = "bc6355899e1c9462875b6757c79f3caa011a1fdae12bbb1a2e72dd1f234f8336"
 [[package]]
 name = "polycool"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50596ddc09eb5ad5f75cacd40209568e66df71baf86e1499a0e99c4cff12a5a6"
 dependencies = [
  "arrayvec",
 ]
@@ -1369,10 +1364,6 @@ checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
 dependencies = [
  "bitflags",
 ]
-
-[[package]]
-name = "spline"
-version = "0.1.0"
 
 [[package]]
 name = "stable_deref_trait"

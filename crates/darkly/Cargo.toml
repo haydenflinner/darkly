@@ -57,9 +57,8 @@ vello = { workspace = true }
 kurbo = { workspace = true }
 peniko = { workspace = true }
 parley = { workspace = true }
-# S9 spline solving for `ObjectSource::Spline` (knots → cubics) — shared with
-# the literate host so the editor and Nina agree on the curve through knots.
-spline = { workspace = true }
+# S9 spline solving for `ObjectSource::Spline` (knots → cubics) rides on
+# `kurbo::solve_spline` — the patched kurbo fork (workspace [patch] section).
 
 [build-dependencies]
 # build.rs parses `src/engine` to aggregate every `#[handler]`-tagged method

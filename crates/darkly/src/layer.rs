@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use kurbo::{Affine, BezPath, Stroke};
+use kurbo::{Affine, BezPath, Point, Stroke};
 use peniko::Brush;
 use serde::{Deserialize, Serialize};
 
@@ -422,20 +422,20 @@ impl SplineShape {
         if self.knots.len() < 2 || (self.closed && self.knots.len() < 3) {
             return None;
         }
-        let knots: Vec<spline::Pt> = self
+        let knots: Vec<Point> = self
             .knots
             .iter()
-            .map(|k| spline::Pt::new(k[0], k[1]))
+            .map(|k| Point::new(k[0], k[1]))
             .collect();
         let cubics = match &self.ends {
-            Some([a, b]) => spline::solve_with_ends(
+            Some([a, b]) => kurbo::solve_spline_with_ends(
                 &knots,
-                &spline::EndControls {
-                    start: Some(spline::Pt::new(a[0], a[1])),
-                    end: Some(spline::Pt::new(b[0], b[1])),
+                &kurbo::EndControls {
+                    start: Some(Point::new(a[0], a[1])),
+                    end: Some(Point::new(b[0], b[1])),
                 },
             ),
-            None => spline::solve(&knots, self.closed),
+            None => kurbo::solve_spline(&knots, self.closed),
         }?;
         let mut path = BezPath::new();
         path.move_to((knots[0].x, knots[0].y));

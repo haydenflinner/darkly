@@ -427,22 +427,22 @@ impl DarklyEngine {
             closed,
             ends,
         };
-        let pts: Vec<spline::Pt> = shape
+        let pts: Vec<kurbo::Point> = shape
             .knots
             .iter()
-            .map(|k| spline::Pt::new(k[0], k[1]))
+            .map(|k| kurbo::Point::new(k[0], k[1]))
             .collect();
         let cubics = match &shape.ends {
-            Some([a, b]) => spline::solve_with_ends(
+            Some([a, b]) => kurbo::solve_spline_with_ends(
                 &pts,
-                &spline::EndControls {
-                    start: Some(spline::Pt::new(a[0], a[1])),
-                    end: Some(spline::Pt::new(b[0], b[1])),
+                &kurbo::EndControls {
+                    start: Some(kurbo::Point::new(a[0], a[1])),
+                    end: Some(kurbo::Point::new(b[0], b[1])),
                 },
             ),
-            None => spline::solve(&pts, shape.closed),
+            None => kurbo::solve_spline(&pts, shape.closed),
         }?;
-        let spline = spline::Spline::from_cubics(&pts, shape.closed, cubics);
+        let spline = kurbo::Spline::from_cubics(&pts, shape.closed, cubics);
         let cubics_out = spline
             .cubics
             .iter()

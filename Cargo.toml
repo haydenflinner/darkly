@@ -23,9 +23,6 @@ repository = "https://github.com/darkly-art/darkly"
 # rewrites all three to the tag being published.
 darkly = { path = "crates/darkly", default-features = false }
 darkly-macros = { path = "crates/darkly-macros", version = "0.1.0" }
-# Shared with the literate eval crates (Mimas `Spline` native): the S9 solver
-# lives in the repo-root `spline` crate so both engines agree numerically.
-spline = { path = "../spline", version = "0.1.0" }
 
 # Proc-macro toolchain (the `#[handlers]` engine-bridge macro + build.rs scan)
 syn = { version = "3", features = ["full", "visit"] }
@@ -95,6 +92,11 @@ console_log = "1"
 # and Cargo never GCs stale fingerprints). Line tables keep panics/backtraces useful
 # while cutting each binary well over half; unpacked split-debuginfo keeps the debug
 # data in separate object files out of the linked executables.
+
+# S9 spline fork: knot-interpolating `Spline`/`solve_spline` on kurbo types.
+[patch.crates-io]
+kurbo = { path = "../../kurbo/kurbo" }
+
 [profile.dev]
 opt-level = 1
 debug = "line-tables-only"
