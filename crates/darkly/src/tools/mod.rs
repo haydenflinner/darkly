@@ -9,6 +9,7 @@ pub mod fill;
 pub mod gradient;
 pub mod lasso_select;
 pub mod magic_wand;
+pub mod path;
 pub mod polygon_select;
 pub mod rect_select;
 pub mod text;
@@ -27,6 +28,7 @@ pub fn registrations() -> Vec<ToolRegistration> {
         gradient::register(),
         lasso_select::register(),
         magic_wand::register(),
+        path::register(),
         polygon_select::register(),
         rect_select::register(),
         text::register(),

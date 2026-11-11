@@ -367,14 +367,86 @@ impl TextProps {
     }
 }
 
-/// What a [`VectorObject`] draws. Two variants and no growth axis: shapes are
-/// plain [`BezPath`]s (rectangles/ellipses convert into one), and the only
-/// editable, non-path source is [`TextProps`]. No trait, no registry: a third
-/// kind would only ever be another bespoke editable source, added here.
+/// What a [`VectorObject`] draws. Shapes are plain [`BezPath`]s (rectangles/
+/// ellipses convert into one); the editable, non-baked sources are
+/// [`TextProps`] and [`SplineShape`]. No trait, no registry: a fourth kind
+/// would only ever be another bespoke editable source, added here.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ObjectSource {
     Path(BezPath),
     Text(TextProps),
+    Spline(SplineShape),
+}
+
+impl ObjectSource {
+    /// The path-like sources' drawn geometry as a `BezPath` — `None` for
+    /// text, which has no curve geometry. Consumers that flatten, cut, or
+    /// mask against a shape take this rather than matching on the variant:
+    /// a solved spline and a baked path are the same draw downstream.
+    pub fn bezpath(&self) -> Option<BezPath> {
+        match self {
+            ObjectSource::Path(p) => Some(p.clone()),
+            ObjectSource::Spline(s) => s.to_bezpath(),
+            ObjectSource::Text(_) => None,
+        }
+    }
+}
+
+/// An editable S9 spline: the knots are the authoritative geometry, and the
+/// rendered curve is a derived solve (Aurimas Gasiulis's curvature-law
+/// spline, MIT — the repo-root `spline` crate, <https://gasiulis.name/new-spline/>).
+/// Keeping the knots instead of the solved `BezPath` is what makes a
+/// committed path re-editable: the path tool re-reads them and the scene
+/// build re-solves on every change.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SplineShape {
+    /// Interpolation points the curve must pass through, object-local.
+    /// ≥2 solve; `closed` needs ≥3.
+    pub knots: Vec<[f64; 2]>,
+    /// Cycle vs open chain. A closed spline adds the wrap segment from the
+    /// last knot back to the first.
+    pub closed: bool,
+    /// Open-spline end tangents as absolute control points: the line from
+    /// `ends[0]` to the first knot aims the start tangent, the line from
+    /// `ends[1]` to the last knot aims the end tangent (S9 `ends`). `None`
+    /// gives natural ends.
+    pub ends: Option<[[f64; 2]; 2]>,
+}
+
+impl SplineShape {
+    /// Solve the knots into the cubic chain the renderer draws. `None` for
+    /// degenerate input (too few knots, coincident consecutive knots, or a
+    /// segment the solver cannot approximate) — callers skip rather than
+    /// draw something wrong.
+    pub fn to_bezpath(&self) -> Option<BezPath> {
+        if self.knots.len() < 2 || (self.closed && self.knots.len() < 3) {
+            return None;
+        }
+        let knots: Vec<spline::Pt> = self
+            .knots
+            .iter()
+            .map(|k| spline::Pt::new(k[0], k[1]))
+            .collect();
+        let cubics = match &self.ends {
+            Some([a, b]) => spline::solve_with_ends(
+                &knots,
+                &spline::EndControls {
+                    start: Some(spline::Pt::new(a[0], a[1])),
+                    end: Some(spline::Pt::new(b[0], b[1])),
+                },
+            ),
+            None => spline::solve(&knots, self.closed),
+        }?;
+        let mut path = BezPath::new();
+        path.move_to((knots[0].x, knots[0].y));
+        for c in &cubics {
+            path.curve_to((c.p1.x, c.p1.y), (c.p2.x, c.p2.y), (c.p3.x, c.p3.y));
+        }
+        if self.closed {
+            path.close_path();
+        }
+        Some(path)
+    }
 }
 
 /// Stable identity of a [`VectorObject`] within its owning [`VectorLayer`].
@@ -406,6 +478,13 @@ pub struct VectorObject {
     pub transform: Affine,
     pub fill: Option<Brush>,
     pub stroke: Option<(Stroke, Brush)>,
+    /// Non-printing guide: the object emits no fill/stroke into the layer
+    /// scene — its shape draws as a dashed canvas overlay instead and acts
+    /// as a pen guide (`wall` refuses crossings, `snap` pulls the tip onto
+    /// the curve). Serde-defaulted so files saved before guides existed
+    /// load as ordinary printing objects.
+    #[serde(default)]
+    pub guide: bool,
     pub source: ObjectSource,
 }
 
@@ -418,6 +497,7 @@ impl VectorObject {
             transform,
             fill: Some(fill),
             stroke: None,
+            guide: false,
             source: ObjectSource::Text(text),
         }
     }

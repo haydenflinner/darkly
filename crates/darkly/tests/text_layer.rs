@@ -109,6 +109,7 @@ fn set_vector_objects_replaces_and_undoes() {
             255, 255, 255, 255,
         ))),
         stroke: None,
+        guide: false,
         source: ObjectSource::Path(kurbo::Rect::new(10.0, 10.0, 50.0, 40.0).to_path(0.1)),
     };
     engine

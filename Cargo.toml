@@ -23,6 +23,9 @@ repository = "https://github.com/darkly-art/darkly"
 # rewrites all three to the tag being published.
 darkly = { path = "crates/darkly", default-features = false }
 darkly-macros = { path = "crates/darkly-macros", version = "0.1.0" }
+# Shared with the literate eval crates (Mimas `Spline` native): the S9 solver
+# lives in the repo-root `spline` crate so both engines agree numerically.
+spline = { path = "../spline", version = "0.1.0" }
 
 # Proc-macro toolchain (the `#[handlers]` engine-bridge macro + build.rs scan)
 syn = { version = "3", features = ["full", "visit"] }

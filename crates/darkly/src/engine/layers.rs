@@ -16,7 +16,7 @@ use crate::undo::{
 /// Convert Darkly's row-major `[a, b, tx, c, d, ty]` affine (point map
 /// `x' = a·x + b·y + tx`, `y' = c·x + d·y + ty`) into kurbo's column-major
 /// `[a, b, c, d, e, f]` (`x' = a·x + c·y + e`, `y' = b·x + d·y + f`).
-fn transform_to_kurbo(t: &crate::transform::Transform) -> kurbo::Affine {
+pub(crate) fn transform_to_kurbo(t: &crate::transform::Transform) -> kurbo::Affine {
     let [a, b, tx, c, d, ty] = t.to_affine();
     kurbo::Affine::new([a as f64, c as f64, b as f64, d as f64, tx as f64, ty as f64])
 }
@@ -42,6 +42,13 @@ pub(crate) enum VectorOpKind {
     /// A text box-frame resize (origin + box size). Its own lane so a resize
     /// drag coalesces to one undo step, distinct from a glyph transform.
     Box,
+    /// A spline knot-drag run — its own lane so a drag of one knot is one
+    /// undo step, not one per pointer move, and a style tweak between drags
+    /// doesn't merge into the geometry run.
+    Knots,
+    /// The non-printing guide flag. Its own lane so a flag flip doesn't
+    /// merge into an adjacent geometry or style edit.
+    Guide,
 }
 
 /// Coalesce discriminator for one object's edits: distinct per `(object, op)`,
@@ -54,8 +61,10 @@ fn vector_coalesce_tag(object: crate::layer::ObjectId, op: VectorOpKind) -> u64 
         VectorOpKind::Style => 1,
         VectorOpKind::Transform => 2,
         VectorOpKind::Box => 3,
+        VectorOpKind::Knots => 4,
+        VectorOpKind::Guide => 5,
     };
-    (object.0 << 2) | op
+    (object.0 << 3) | op
 }
 
 /// Extract an RGBA byte tuple from an optional solid fill, defaulting to opaque
@@ -92,6 +101,44 @@ pub struct TextObjectEntry {
     /// `Some((w, h))` for area text, `None` for point text, which lets the
     /// panel tell which mode an object is in.
     pub box_size: Option<(f32, f32)>,
+}
+
+/// One spline object's editable state as the path tool consumes it: the
+/// stamped id, the plane-space knots/ends (mapped through the object's
+/// canvas affine on the way out, inverse-mapped by `set_spline_knots` on
+/// the way in), and the row-major object→canvas affine itself.
+pub struct SplineObjectInfo {
+    pub object: crate::layer::ObjectId,
+    pub knots: Vec<[f64; 2]>,
+    pub closed: bool,
+    pub ends: Option<[[f64; 2]; 2]>,
+    /// The non-printing flag (`VectorObject::guide`) — the path tool's
+    /// options strip binds its Guide toggle here.
+    pub guide: bool,
+    pub matrix: crate::transform::Affine2D,
+}
+
+/// Build the stroked `VectorObject` a spline tool commit pushes: no fill
+/// (a path is a stroke, not a region — the cutout/mask ops derive fills
+/// from the closed shape instead), peniko stroke at `stroke_w` in `color`.
+fn spline_object(
+    shape: crate::layer::SplineShape,
+    color: [u8; 4],
+    stroke_w: f64,
+) -> crate::layer::VectorObject {
+    crate::layer::VectorObject {
+        id: crate::layer::ObjectId::UNASSIGNED,
+        transform: kurbo::Affine::IDENTITY,
+        fill: None,
+        stroke: Some((
+            kurbo::Stroke::new(stroke_w.max(0.1)),
+            peniko::Brush::Solid(peniko::Color::from_rgba8(
+                color[0], color[1], color[2], color[3],
+            )),
+        )),
+        guide: false,
+        source: crate::layer::ObjectSource::Spline(shape),
+    }
 }
 
 #[handlers]
@@ -219,6 +266,7 @@ impl DarklyEngine {
                 }
             }
             crate::layer::ObjectSource::Path(p) => Some(p.bounding_box()),
+            crate::layer::ObjectSource::Spline(s) => s.to_bezpath().map(|p| p.bounding_box()),
         }
     }
 
@@ -329,6 +377,225 @@ impl DarklyEngine {
         Some(object_id)
     }
 
+    // --- Splines ---------------------------------------------------------------
+    //
+    // `ObjectSource::Spline` keeps the knots authoritative and solves on
+    // realize. The wire speaks **plane space** for knots and end controls;
+    // the engine maps through the object's canvas affine `G` (layer ∘ obj),
+    // so a gizmo-moved or layer-transformed spline still edits correctly.
+
+    /// Build a [`SplineShape`] from plane-space knots for insertion under
+    /// `layer_affine` (new objects carry `transform = IDENTITY`, so the
+    /// inverse layer affine is the whole map). `None` when the layer
+    /// transform is singular.
+    fn spline_shape_from_plane(
+        knots: Vec<[f64; 2]>,
+        closed: bool,
+        ends: Option<[[f64; 2]; 2]>,
+        layer_affine: kurbo::Affine,
+    ) -> Option<crate::layer::SplineShape> {
+        if layer_affine.determinant().abs() < 1e-12 {
+            return None;
+        }
+        let inv = layer_affine.inverse();
+        let map = |p: [f64; 2]| {
+            let q = inv * kurbo::Point::new(p[0], p[1]);
+            [q.x, q.y]
+        };
+        Some(crate::layer::SplineShape {
+            knots: knots.iter().map(|k| map(*k)).collect(),
+            closed,
+            ends: ends.map(|[a, b]| [map(a), map(b)]),
+        })
+    }
+
+    /// Solve plane-space knots through the shared S9 solver — the path
+    /// tool's live-preview query. Returns the cubic chain plus the flattened
+    /// sample polyline (what overlay, guide, and mask tessellation draw),
+    /// or `None` for input the solver can't complete.
+    pub fn spline_solve(
+        &self,
+        knots: Vec<[f64; 2]>,
+        closed: bool,
+        ends: Option<[[f64; 2]; 2]>,
+    ) -> Option<(Vec<[[f64; 2]; 4]>, Vec<[f64; 2]>)> {
+        if knots.len() < 2 || (closed && knots.len() < 3) {
+            return None;
+        }
+        let shape = crate::layer::SplineShape {
+            knots,
+            closed,
+            ends,
+        };
+        let pts: Vec<spline::Pt> = shape
+            .knots
+            .iter()
+            .map(|k| spline::Pt::new(k[0], k[1]))
+            .collect();
+        let cubics = match &shape.ends {
+            Some([a, b]) => spline::solve_with_ends(
+                &pts,
+                &spline::EndControls {
+                    start: Some(spline::Pt::new(a[0], a[1])),
+                    end: Some(spline::Pt::new(b[0], b[1])),
+                },
+            ),
+            None => spline::solve(&pts, shape.closed),
+        }?;
+        let spline = spline::Spline::from_cubics(&pts, shape.closed, cubics);
+        let cubics_out = spline
+            .cubics
+            .iter()
+            .map(|c| {
+                [
+                    [c.p0.x, c.p0.y],
+                    [c.p1.x, c.p1.y],
+                    [c.p2.x, c.p2.y],
+                    [c.p3.x, c.p3.y],
+                ]
+            })
+            .collect();
+        let samples = spline.samples().iter().map(|p| [p.x, p.y]).collect();
+        Some((cubics_out, samples))
+    }
+
+    /// One spline object's editable state as the path tool consumes it:
+    /// plane-space knots/ends plus the stamped object id. `matrix` is the
+    /// object-to-canvas affine, reordered row-major like
+    /// [`Self::vector_object_info`], so a caller that needs the local frame
+    /// (guide drawing against other objects) can compose it.
+    pub fn spline_objects(&self, id: LayerId) -> Vec<SplineObjectInfo> {
+        let Some(Layer::Vector(v)) = self.doc.layer(id) else {
+            return Vec::new();
+        };
+        let layer_affine = transform_to_kurbo(&v.transform);
+        v.objects
+            .iter()
+            .filter_map(|obj| {
+                let crate::layer::ObjectSource::Spline(s) = &obj.source else {
+                    return None;
+                };
+                let g = layer_affine * obj.transform;
+                let map = |p: [f64; 2]| {
+                    let q = g * kurbo::Point::new(p[0], p[1]);
+                    [q.x, q.y]
+                };
+                Some(SplineObjectInfo {
+                    object: obj.id,
+                    knots: s.knots.iter().map(|k| map(*k)).collect(),
+                    closed: s.closed,
+                    ends: s.ends.map(|[a, b]| [map(a), map(b)]),
+                    guide: obj.guide,
+                    matrix: kurbo_to_affine(g),
+                })
+            })
+            .collect()
+    }
+
+    /// Add a vector layer seeded with one spline object drawn in `color`
+    /// stroked at `stroke_w` (RGBA bytes, canvas px). `knots`/`ends` arrive in
+    /// plane space and are stored object-local. Returns the new layer id and
+    /// stamped object id, or `None` for a singular layer transform. One undo
+    /// step.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_spline_layer(
+        &mut self,
+        knots: Vec<[f64; 2]>,
+        closed: bool,
+        ends: Option<[[f64; 2]; 2]>,
+        color: [u8; 4],
+        stroke_w: f64,
+        anchor: Option<LayerId>,
+    ) -> Option<(LayerId, crate::layer::ObjectId)> {
+        let shape = Self::spline_shape_from_plane(knots, closed, ends, kurbo::Affine::IDENTITY)?;
+        let id = self.doc.add_vector_layer(anchor);
+        let obj = spline_object(shape, color, stroke_w);
+        let object_id = match self.doc.find_node_mut(id) {
+            Some(LayerNode::Layer(Layer::Vector(v))) => v.push_object(obj),
+            _ => crate::layer::ObjectId::UNASSIGNED,
+        };
+        self.sync_vector_layer(id);
+        self.compositor.mark_dirty();
+        let slot = self.doc.slot_of(id).unwrap_or_default();
+        self.push_undo(Box::new(EntityAddAction::new(id, slot)));
+        Some((id, object_id))
+    }
+
+    /// Add a spline object to an *existing* vector layer — the
+    /// "another path on the same layer" path, mirroring
+    /// [`Self::add_text_object`]. Plane-space knots are mapped through the
+    /// inverse layer affine. `None` for a non-vector or singular-transform
+    /// id. One undo step.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_spline_object(
+        &mut self,
+        layer_id: LayerId,
+        knots: Vec<[f64; 2]>,
+        closed: bool,
+        ends: Option<[[f64; 2]; 2]>,
+        color: [u8; 4],
+        stroke_w: f64,
+    ) -> Option<crate::layer::ObjectId> {
+        let (old, layer_affine) = match self.doc.layer(layer_id) {
+            Some(Layer::Vector(v)) => (v.objects.clone(), transform_to_kurbo(&v.transform)),
+            _ => return None,
+        };
+        let shape = Self::spline_shape_from_plane(knots, closed, ends, layer_affine)?;
+        let object_id = match self.doc.find_node_mut(layer_id) {
+            Some(LayerNode::Layer(Layer::Vector(v))) => {
+                v.push_object(spline_object(shape, color, stroke_w))
+            }
+            _ => return None,
+        };
+        let new = match self.doc.layer(layer_id) {
+            Some(Layer::Vector(v)) => v.objects.clone(),
+            _ => return None,
+        };
+        self.push_undo(Box::new(PropertyAction::new(
+            layer_id,
+            Property::VectorObjects(old),
+            Property::VectorObjects(new),
+        )));
+        self.sync_vector_layer(layer_id);
+        self.compositor.mark_dirty();
+        Some(object_id)
+    }
+
+    /// Rewrite a spline object's knots/closed/ends from the path tool's
+    /// plane-space edit state. Maps through the object's full canvas affine
+    /// `G⁻¹` so a gizmo-transformed spline stays editable in place. The whole
+    /// geometry write is one [`VectorOpKind::Knots`] step, so a knot drag
+    /// coalesces to one undo.
+    pub fn set_spline_knots(
+        &mut self,
+        id: LayerId,
+        object: crate::layer::ObjectId,
+        knots: Vec<[f64; 2]>,
+        closed: bool,
+        ends: Option<[[f64; 2]; 2]>,
+    ) {
+        let layer_affine = match self.doc.layer(id) {
+            Some(Layer::Vector(v)) => transform_to_kurbo(&v.transform),
+            _ => return,
+        };
+        self.edit_vector_object(id, object, VectorOpKind::Knots, |obj| {
+            let g = layer_affine * obj.transform;
+            if g.determinant().abs() < 1e-12 {
+                return;
+            }
+            let inv = g.inverse();
+            let map = |p: [f64; 2]| {
+                let q = inv * kurbo::Point::new(p[0], p[1]);
+                [q.x, q.y]
+            };
+            if let crate::layer::ObjectSource::Spline(s) = &mut obj.source {
+                s.knots = knots.iter().map(|k| map(*k)).collect();
+                s.closed = closed;
+                s.ends = ends.map(|[a, b]| [map(a), map(b)]);
+            }
+        });
+    }
+
     /// Replace a vector layer's whole object list in one undoable step — the
     /// "host redraws this layer" path (a generated scene, a synced remote
     /// layer), where per-object add/remove would spam undo and flicker.
@@ -382,6 +649,10 @@ impl DarklyEngine {
         let layer_affine = transform_to_kurbo(&v.transform);
         let scene = self.fonts.build_scene(&objects, layer_affine);
         self.compositor.set_vector_scene(id, scene);
+        // Guides are document-level: a per-layer resync still rebuilds the
+        // whole channel (cheap — one flatten per guide object) so every
+        // caller of this choke point gets the refresh for free.
+        self.refresh_guide_overlays();
     }
 
     /// Replace the content string of one text object on a vector layer.
@@ -533,7 +804,7 @@ impl DarklyEngine {
                     color: brush_rgba(&obj.fill),
                     box_size: t.layout.area_size(),
                 }),
-                crate::layer::ObjectSource::Path(_) => None,
+                crate::layer::ObjectSource::Path(_) | crate::layer::ObjectSource::Spline(_) => None,
             })
             .collect()
     }

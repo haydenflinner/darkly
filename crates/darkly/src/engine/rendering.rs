@@ -1188,6 +1188,10 @@ impl DarklyEngine {
         for id in vector_ids {
             self.sync_vector_layer(id);
         }
+        // Structural changes (layer add/remove, undo) don't necessarily run
+        // a per-layer resync, but they can change which guides exist — the
+        // channel is rebuilt from the document, so refresh unconditionally.
+        self.refresh_guide_overlays();
     }
 }
 

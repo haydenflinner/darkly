@@ -425,6 +425,12 @@ impl DarklyEngine {
         }
         self.auto_commit_floating();
         self.active_stroke_layer = Some(id);
+        // Snapshot the pen-guide polylines for this gesture: the wall/snap
+        // clamp tests every incoming point against them, frozen so a
+        // mid-stroke object edit can't move the ruler out from under the
+        // pen (the doc edit path is blocked on a stroke anyway, but the
+        // snapshot also means zero per-dab flatten cost).
+        self.begin_guides_for_stroke();
         // Reset the per-stroke counter accumulator. The bench-side
         // per-event delta snapshot resets in lockstep so the first
         // post-`begin_stroke` drain subtracts against zero rather than
@@ -613,6 +619,12 @@ impl DarklyEngine {
                 cb,
                 ca,
             } => {
+                // Pen guides constrain the tip in plane space before the
+                // stabilizer sees it: the wall refuses crossings, snap
+                // pulls onto the curve. `begin_guides_for_stroke` already
+                // snapshotted the polylines; this is a per-point segment
+                // test, not a re-solve.
+                let (x, y) = self.guide_clamp(x, y);
                 self.brush_stroke_to(
                     layer_id,
                     x,
@@ -1576,6 +1588,10 @@ impl DarklyEngine {
 
     #[handler]
     pub fn end_stroke(&mut self) {
+        // The guide cache lives exactly one stroke: drop it with the
+        // gesture so a stale polyline never constrains a later one.
+        self.stroke_guides.clear();
+        self.stroke_last_point = None;
         if let Some(layer_id) = self.active_stroke_layer.take() {
             // Per-stroke thumbnail refresh: the node texture (raster or mask
             // filter) now holds the cumulative pixels of every dab/op since

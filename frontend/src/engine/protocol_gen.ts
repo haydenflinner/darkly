@@ -14,6 +14,18 @@ export type AddMaskReq = { id: number, };
 
 export type AddRasterReq = { anchor: number | null, };
 
+export type AddSplineObjectReq = { id: number, knots: Array<[number, number]>, closed: boolean, ends?: [[number, number], [number, number]], 
+/**
+ * Stroke color, RGBA 0-255. Defaults to opaque black.
+ */
+color?: [number, number, number, number], 
+/**
+ * Stroke width in canvas px. Defaults to 2.
+ */
+stroke_w?: number, };
+
+export type AddSplineReq = { knots: Array<[number, number]>, closed: boolean, ends?: [[number, number], [number, number]], color?: [number, number, number, number], stroke_w?: number, anchor: number, };
+
 export type AddTextObjectReq = { id: number, content: string, x: number, y: number, 
 /**
  * RGBA 0-255. Defaults to opaque black.
@@ -639,6 +651,8 @@ export type NodeThumbnailReq = { node_id: number, width: number, height: number,
 
 export type ObjectRefReq = { id: number, object: number, };
 
+export type ObjectToSelectionReq = { id: number, object: number, mode: SelectionMode, antialias: boolean, };
+
 export type OrthoXform = "flip_h" | "flip_v" | "rot180" | "rot90_cw" | "rot90_ccw";
 
 export type OverlayHitTestReq = { screen_x: number, screen_y: number, };
@@ -981,6 +995,8 @@ export type SetGroupCollapsedReq = { id: number, collapsed: boolean, };
 
 export type SetGroupPassthroughReq = { id: number, passthrough: boolean, };
 
+export type SetGuideModeReq = { mode: string, };
+
 export type SetIsolatedNodeReq = { id: number | null, };
 
 export type SetLayerNameReq = { id: number, name: string, };
@@ -990,6 +1006,8 @@ export type SetLayerVisibleReq = { id: number, visible: boolean, };
 export type SetMaskLinkedToHostReq = { id: number, linked: boolean, };
 
 export type SetNodeLockedReq = { id: number, locked: boolean, };
+
+export type SetObjectGuideReq = { id: number, object: number, guide: boolean, };
 
 export type SetOpacityReq = { id: number, opacity: number, };
 
@@ -1002,6 +1020,8 @@ export type SetPixelFilterReq = { mode: string, };
 export type SetPreviewThemeReq = { fg: [number, number, number, number], bg: [number, number, number, number], };
 
 export type SetRecordingParamsReq = { enabled: boolean, minIntervalSecs: number, width: number, height: number, baseWidth: number, baseHeight: number, };
+
+export type SetSplineKnotsReq = { id: number, object: number, knots: Array<[number, number]>, closed: boolean, ends?: [[number, number], [number, number]], };
 
 export type SetTextBoxReq = { id: number, object: number, 
 /**
@@ -1033,6 +1053,10 @@ export type SetVoidParamsReq = { id: number, params: JsonValue, };
 export type ShrinkSelectionReq = { radius: number, };
 
 export type SmoothSelectionReq = { radius: number, };
+
+export type SplineLayerReq = { id: number, };
+
+export type SplineSolveReq = { knots: Array<[number, number]>, closed: boolean, ends?: [[number, number], [number, number]], };
 
 export type StartSaveDocumentReq = { snapshot: boolean, };
 
@@ -1069,6 +1093,17 @@ kind: string, x: number, y: number, w: number, h: number, x2: number, y2: number
  */
 points: Array<[number, number]>, closed: boolean, 
 /**
+ * `spline` knots — the editable S9 source (the curve solves through
+ * them at realize). `ends` is the `[start, end]` pair of absolute
+ * tangent-anchor points for open splines.
+ */
+knots: Array<[number, number]>, ends: [[number, number], [number, number]] | null, 
+/**
+ * Non-printing guide: no fill/stroke emission; the shape draws as a
+ * dashed overlay and can constrain the pen (wall/snap).
+ */
+guide: boolean, 
+/**
  * `image`: base64 RGBA8 pixels, `px_w`/`px_h` the pixel dims. `x`,`y`,
  * `w`,`h` stay the display rect — the image is sampled into it.
  */
@@ -1090,6 +1125,8 @@ export type RequestKind =
     | 'add_group'
     | 'add_mask'
     | 'add_raster'
+    | 'add_spline'
+    | 'add_spline_object'
     | 'add_text'
     | 'add_text_object'
     | 'add_void'
@@ -1200,6 +1237,7 @@ export type RequestKind =
     | 'move_layer'
     | 'move_layers'
     | 'node_thumbnail'
+    | 'object_to_selection'
     | 'open_document'
     | 'overlay_hit_test'
     | 'pack_add_brush'
@@ -1252,17 +1290,20 @@ export type RequestKind =
     | 'set_filter_params'
     | 'set_group_collapsed'
     | 'set_group_passthrough'
+    | 'set_guide_mode'
     | 'set_isolated_node'
     | 'set_layer_name'
     | 'set_layer_visible'
     | 'set_mask_linked_to_host'
     | 'set_node_locked'
+    | 'set_object_guide'
     | 'set_opacity'
     | 'set_overlay'
     | 'set_overlay_mask'
     | 'set_pixel_filter'
     | 'set_preview_theme'
     | 'set_recording_params'
+    | 'set_spline_knots'
     | 'set_text_box'
     | 'set_text_content'
     | 'set_text_style'
@@ -1272,6 +1313,8 @@ export type RequestKind =
     | 'set_void_params'
     | 'shrink_selection'
     | 'smooth_selection'
+    | 'spline_objects'
+    | 'spline_solve'
     | 'start_export'
     | 'start_preview'
     | 'start_save_document'
@@ -1294,6 +1337,8 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'add_group',
     'add_mask',
     'add_raster',
+    'add_spline',
+    'add_spline_object',
     'add_text',
     'add_text_object',
     'add_void',
@@ -1404,6 +1449,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'move_layer',
     'move_layers',
     'node_thumbnail',
+    'object_to_selection',
     'open_document',
     'overlay_hit_test',
     'pack_add_brush',
@@ -1456,17 +1502,20 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'set_filter_params',
     'set_group_collapsed',
     'set_group_passthrough',
+    'set_guide_mode',
     'set_isolated_node',
     'set_layer_name',
     'set_layer_visible',
     'set_mask_linked_to_host',
     'set_node_locked',
+    'set_object_guide',
     'set_opacity',
     'set_overlay',
     'set_overlay_mask',
     'set_pixel_filter',
     'set_preview_theme',
     'set_recording_params',
+    'set_spline_knots',
     'set_text_box',
     'set_text_content',
     'set_text_style',
@@ -1476,6 +1525,8 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'set_void_params',
     'shrink_selection',
     'smooth_selection',
+    'spline_objects',
+    'spline_solve',
     'start_export',
     'start_preview',
     'start_save_document',
@@ -1506,6 +1557,8 @@ export interface EngineApi {
     addGroup(req: AddGroupReq): Promise<number>;
     addMask(req: AddMaskReq): Promise<null>;
     addRaster(req: AddRasterReq): Promise<number>;
+    addSpline(req: AddSplineReq): Promise<{ id: number, object: number } | null>;
+    addSplineObject(req: AddSplineObjectReq): Promise<{ object: number }>;
     addText(req: AddTextReq): Promise<{ id: number, object: number }>;
     addTextObject(req: AddTextObjectReq): Promise<{ object: number }>;
     addVoid(req: AddVoidReq): Promise<number | null>;
@@ -1616,6 +1669,7 @@ export interface EngineApi {
     moveLayer(req: MoveLayerReq): Promise<null>;
     moveLayers(req: MoveLayersReq): Promise<number>;
     nodeThumbnail(req: NodeThumbnailReq): Promise<{ bytes: Uint8Array }>;
+    objectToSelection(req: ObjectToSelectionReq): Promise<true | { error: string }>;
     openDocument(bytes: Uint8Array): Promise<void>;
     overlayHitTest(req: OverlayHitTestReq): Promise<number | null>;
     packAddBrush(req: PackAddBrushReq): Promise<null>;
@@ -1668,17 +1722,20 @@ export interface EngineApi {
     setFilterParams(req: SetFilterParamsReq): void;
     setGroupCollapsed(req: SetGroupCollapsedReq): void;
     setGroupPassthrough(req: SetGroupPassthroughReq): void;
+    setGuideMode(req: SetGuideModeReq): void;
     setIsolatedNode(req: SetIsolatedNodeReq): Promise<number | null>;
     setLayerName(req: SetLayerNameReq): void;
     setLayerVisible(req: SetLayerVisibleReq): void;
     setMaskLinkedToHost(req: SetMaskLinkedToHostReq): void;
     setNodeLocked(req: SetNodeLockedReq): void;
+    setObjectGuide(req: SetObjectGuideReq): void;
     setOpacity(req: SetOpacityReq): void;
     setOverlay(req: SetOverlayReq): void;
     setOverlayMask(req: SetOverlayMaskReq): void;
     setPixelFilter(req: SetPixelFilterReq): void;
     setPreviewTheme(req: SetPreviewThemeReq): void;
     setRecordingParams(req: SetRecordingParamsReq): void;
+    setSplineKnots(req: SetSplineKnotsReq): void;
     setTextBox(req: SetTextBoxReq): void;
     setTextContent(req: SetTextContentReq): void;
     setTextStyle(req: SetTextStyleReq): void;
@@ -1688,6 +1745,8 @@ export interface EngineApi {
     setVoidParams(req: SetVoidParamsReq): void;
     shrinkSelection(req: ShrinkSelectionReq): void;
     smoothSelection(req: SmoothSelectionReq): void;
+    splineObjects(req: SplineLayerReq): Promise<{ objects: Array<{ object: number, knots: [number, number][], closed: boolean, ends: [[number, number], [number, number]] | null, guide: boolean, matrix: number[] }> }>;
+    splineSolve(req: SplineSolveReq): Promise<{ cubics: [number, number][][], samples: [number, number][] } | null>;
     startExport(): void;
     startPreview(req: PreviewReq): void;
     startSaveDocument(req: StartSaveDocumentReq): Promise<void>;
@@ -1712,6 +1771,8 @@ export function makeApi(t: Transport): EngineApi {
         addGroup: (req) => t.request('add_group', req),
         addMask: (req) => t.request('add_mask', req),
         addRaster: (req) => t.request('add_raster', req),
+        addSpline: (req) => t.request('add_spline', req),
+        addSplineObject: (req) => t.request('add_spline_object', req),
         addText: (req) => t.request('add_text', req),
         addTextObject: (req) => t.request('add_text_object', req),
         addVoid: (req) => t.request('add_void', req),
@@ -1822,6 +1883,7 @@ export function makeApi(t: Transport): EngineApi {
         moveLayer: (req) => t.request('move_layer', req),
         moveLayers: (req) => t.request('move_layers', req),
         nodeThumbnail: (req) => t.request('node_thumbnail', req),
+        objectToSelection: (req) => t.request('object_to_selection', req),
         openDocument: (bytes) => t.request('open_document', {}, bytes),
         overlayHitTest: (req) => t.request('overlay_hit_test', req),
         packAddBrush: (req) => t.request('pack_add_brush', req),
@@ -1874,17 +1936,20 @@ export function makeApi(t: Transport): EngineApi {
         setFilterParams: (req) => t.postFF('set_filter_params', req),
         setGroupCollapsed: (req) => t.postFF('set_group_collapsed', req),
         setGroupPassthrough: (req) => t.postFF('set_group_passthrough', req),
+        setGuideMode: (req) => t.postFF('set_guide_mode', req),
         setIsolatedNode: (req) => t.request('set_isolated_node', req),
         setLayerName: (req) => t.postFF('set_layer_name', req),
         setLayerVisible: (req) => t.postFF('set_layer_visible', req),
         setMaskLinkedToHost: (req) => t.postFF('set_mask_linked_to_host', req),
         setNodeLocked: (req) => t.postFF('set_node_locked', req),
+        setObjectGuide: (req) => t.postFF('set_object_guide', req),
         setOpacity: (req) => t.postFF('set_opacity', req),
         setOverlay: (req) => t.postFF('set_overlay', req),
         setOverlayMask: (req) => t.postFF('set_overlay_mask', req),
         setPixelFilter: (req) => t.postFF('set_pixel_filter', req),
         setPreviewTheme: (req) => t.postFF('set_preview_theme', req),
         setRecordingParams: (req) => t.postFF('set_recording_params', req),
+        setSplineKnots: (req) => t.postFF('set_spline_knots', req),
         setTextBox: (req) => t.postFF('set_text_box', req),
         setTextContent: (req) => t.postFF('set_text_content', req),
         setTextStyle: (req) => t.postFF('set_text_style', req),
@@ -1894,6 +1959,8 @@ export function makeApi(t: Transport): EngineApi {
         setVoidParams: (req) => t.postFF('set_void_params', req),
         shrinkSelection: (req) => t.postFF('shrink_selection', req),
         smoothSelection: (req) => t.postFF('smooth_selection', req),
+        splineObjects: (req) => t.request('spline_objects', req),
+        splineSolve: (req) => t.request('spline_solve', req),
         startExport: () => t.postFF('start_export'),
         startPreview: (req) => t.postFF('start_preview', req),
         startSaveDocument: (req) => t.request('start_save_document', req),

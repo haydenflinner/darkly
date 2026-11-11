@@ -229,8 +229,8 @@ fn airbrush_opacity_tracks_pressure() {
 
 #[test]
 fn ink_pen_deposits_at_center() {
-    // Pressure drives `paint.size` directly, so pressure=1.0 renders the
-    // full-size crisp disc at the canvas centre.
+    // Ballpoint: size comes from brush_settings only (no pressure→size
+    // wire), so pressure=1.0 still renders the full-size crisp disc.
     let rgba = render_single_dab("Ink Pen", 0.15, [0.0, 0.0, 1.0, 1.0]);
     let center = center_rgba(&rgba);
     assert!(

@@ -8,6 +8,7 @@ pub mod brush_preview;
 pub mod clipboard;
 pub mod color_pick;
 pub mod floating;
+pub mod guides;
 pub mod histogram;
 pub mod image_io;
 pub mod layers;
@@ -15,6 +16,7 @@ pub mod overlay;
 pub mod preview;
 pub mod recording;
 pub mod selection;
+pub mod spline;
 pub mod text;
 pub mod view;
 
@@ -29,6 +31,7 @@ pub fn registrations() -> Vec<RequestRegistration> {
     all.extend(clipboard::registrations());
     all.extend(color_pick::registrations());
     all.extend(floating::registrations());
+    all.extend(guides::registrations());
     all.extend(histogram::registrations());
     all.extend(image_io::registrations());
     all.extend(layers::registrations());
@@ -36,6 +39,7 @@ pub fn registrations() -> Vec<RequestRegistration> {
     all.extend(preview::registrations());
     all.extend(recording::registrations());
     all.extend(selection::registrations());
+    all.extend(spline::registrations());
     all.extend(text::registrations());
     all.extend(view::registrations());
     all

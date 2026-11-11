@@ -69,6 +69,17 @@ pub struct VectorObjectSpec {
     pub points: Vec<[f64; 2]>,
     #[serde(default)]
     pub closed: bool,
+    /// `spline` knots — the editable S9 source (the curve solves through
+    /// them at realize). `ends` is the `[start, end]` pair of absolute
+    /// tangent-anchor points for open splines.
+    #[serde(default)]
+    pub knots: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub ends: Option<[[f64; 2]; 2]>,
+    /// Non-printing guide: no fill/stroke emission; the shape draws as a
+    /// dashed overlay and can constrain the pen (wall/snap).
+    #[serde(default)]
+    pub guide: bool,
     /// `image`: base64 RGBA8 pixels, `px_w`/`px_h` the pixel dims. `x`,`y`,
     /// `w`,`h` stay the display rect — the image is sampled into it.
     #[serde(default)]
@@ -175,7 +186,30 @@ fn spec_to_object(spec: &VectorObjectSpec) -> Option<VectorObject> {
                     },
                 ))),
                 stroke: None,
+                guide: false,
                 source: ObjectSource::Path(kurbo::Rect::new(0.0, 0.0, pw, ph).to_path(0.1)),
+            });
+        }
+        "spline" => {
+            if spec.knots.len() < 2 {
+                return None;
+            }
+            return Some(VectorObject {
+                id: ObjectId::UNASSIGNED,
+                transform: kurbo::Affine::IDENTITY,
+                fill: spec.fill.map(solid),
+                stroke: spec.stroke.map(|c| {
+                    (
+                        kurbo::Stroke::new(spec.stroke_w.unwrap_or(1.0).max(0.1)),
+                        solid(c),
+                    )
+                }),
+                guide: spec.guide,
+                source: ObjectSource::Spline(crate::layer::SplineShape {
+                    knots: spec.knots.clone(),
+                    closed: spec.closed,
+                    ends: spec.ends,
+                }),
             });
         }
         "text" => {
@@ -187,7 +221,9 @@ fn spec_to_object(spec: &VectorObjectSpec) -> Option<VectorObject> {
             return Some(VectorObject::text(
                 props,
                 kurbo::Affine::translate((spec.x, spec.y)),
-                spec.fill.map(solid).unwrap_or_else(|| solid([0, 0, 0, 255])),
+                spec.fill
+                    .map(solid)
+                    .unwrap_or_else(|| solid([0, 0, 0, 255])),
             ));
         }
         _ => return None,
@@ -197,6 +233,7 @@ fn spec_to_object(spec: &VectorObjectSpec) -> Option<VectorObject> {
         transform: kurbo::Affine::IDENTITY,
         fill: fill.map(solid),
         stroke: stroke.map(|(c, w)| (kurbo::Stroke::new(w.max(0.1)), solid(c))),
+        guide: spec.guide,
         source: ObjectSource::Path(path),
     })
 }
@@ -224,11 +261,7 @@ pub fn registrations() -> Vec<RequestRegistration> {
         .resp::<Option<VoidTransformInfoResp>>(),
         RequestRegistration::new("set_vector_objects", |engine, payload, _b| {
             let r: SetVectorObjectsReq = decode(payload)?;
-            let objects: Vec<VectorObject> = r
-                .objects
-                .iter()
-                .filter_map(spec_to_object)
-                .collect();
+            let objects: Vec<VectorObject> = r.objects.iter().filter_map(spec_to_object).collect();
             let ids = engine
                 .set_vector_objects(r.id, objects)
                 .map_err(crate::engine::protocol::bad_payload)?;

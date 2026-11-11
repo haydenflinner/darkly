@@ -26,6 +26,18 @@ use vello::Scene;
 
 use crate::layer::{ObjectSource, TextAlign, TextProps, TextStyle, VectorObject};
 
+/// Draw one path-like source (a baked `BezPath` or a solved spline) with the
+/// object's fill and stroke styles — the shared body of the `Path`/`Spline`
+/// scene arms.
+fn fill_stroke(scene: &mut Scene, path: &kurbo::BezPath, transform: Affine, obj: &VectorObject) {
+    if let Some(brush) = &obj.fill {
+        scene.fill(Fill::NonZero, transform, brush, None, path);
+    }
+    if let Some((stroke, brush)) = &obj.stroke {
+        scene.stroke(stroke, transform, brush, None, path);
+    }
+}
+
 /// A variable-font axis a family exposes, surfaced to the UI so it can render one
 /// control per axis with the font's real range. `tag` is the 4-char fvar tag
 /// (`"wght"`, `"wdth"`, …); the frontend maps it to a friendly label.
@@ -203,17 +215,23 @@ impl FontRegistry {
     /// shaped here (parley) and emitted as glyph runs; paths are filled/stroked
     /// directly. `layer_transform` is the layer-level gizmo affine, baked in so
     /// the rasterization is crisp at canvas resolution (raster-first).
+    /// Splines solve their knots into the cubic chain first — same draw.
     pub fn build_scene(&mut self, objects: &[VectorObject], layer_transform: Affine) -> Scene {
         let mut scene = Scene::new();
         for obj in objects {
+            // Guides never paint: their outline lives on the Guides overlay
+            // channel and in the pen-guide clamp, not in the layer texture.
+            if obj.guide {
+                continue;
+            }
             let transform = layer_transform * obj.transform;
             match &obj.source {
                 ObjectSource::Path(path) => {
-                    if let Some(brush) = &obj.fill {
-                        scene.fill(Fill::NonZero, transform, brush, None, path);
-                    }
-                    if let Some((stroke, brush)) = &obj.stroke {
-                        scene.stroke(stroke, transform, brush, None, path);
+                    fill_stroke(&mut scene, path, transform, obj);
+                }
+                ObjectSource::Spline(shape) => {
+                    if let Some(path) = shape.to_bezpath() {
+                        fill_stroke(&mut scene, &path, transform, obj);
                     }
                 }
                 ObjectSource::Text(text) => {

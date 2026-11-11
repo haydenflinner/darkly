@@ -38,6 +38,8 @@ hotkeys:
   # Photoshop binds Lasso to L and Polygonal Lasso to Shift+L.
   lassoSelectTool: KeyL
   polygonSelectTool: Shift+KeyL
+  # Photoshop's Pen tool (the path-drawing analog) is P.
+  pathTool: KeyP
   # Layers.
   # Delete on the Layers panel deletes the active layer; the global Delete
   # binding (clearSelectionContents) coexists via the binding-site scope.

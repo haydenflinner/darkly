@@ -15,6 +15,13 @@ export interface EngineError {
  *  surfaces here instead of being swallowed by a bare `void`. */
 export function reportEngineError(e: unknown): void {
     const err = e as Partial<EngineError> | undefined;
+    // A request that found the engine already freed is lifecycle, not a
+    // failure: the mount it belonged to is gone (teardown, HMR, a doc
+    // swap). Keep it off the error log — users read that as breakage.
+    if (err?.message === 'engine closed') {
+        console.debug('[engine] request after close:', err?.kind ?? 'error');
+        return;
+    }
     console.error('[engine] request failed:', err?.kind ?? 'error', err?.message ?? e);
     // A raw exception (wasm trap, abort) carries the trapping frames only in
     // `stack` — without it a wedged engine reports a bare `unreachable`.
@@ -235,6 +242,10 @@ export class Engine {
 
     private runScheduledDrain(): void {
         this.drainScheduled = false;
+        // A drain armed before `free()` fires after it: the handle is
+        // gone, and draining it is a wasm null-pointer trap. The pending
+        // requests were already rejected by `free`.
+        if (this.closed) return;
         const hb = (globalThis as any).__darklyHeapProbe?.() ?? 0;
         let out: DrainResult;
         try {

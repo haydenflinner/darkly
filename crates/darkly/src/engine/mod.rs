@@ -10,6 +10,7 @@ mod export;
 mod filters;
 mod flatten;
 mod floating;
+mod guides;
 #[cfg(any(test, feature = "testing"))]
 pub use floating::TransformCommitFailurePoint;
 mod image_rescale;
@@ -384,6 +385,11 @@ pub enum OverlayChannel {
     /// Marching-ants selection outline, regenerated when the selection
     /// changes. Bottom of the stack.
     Selection,
+    /// Non-printing guide paths: the dashed outline of every vector object
+    /// flagged `guide`. Rebuilt from the document whenever vector objects
+    /// change (the `sync_vector_layer` / `sync_compositor_layers` resync),
+    /// so it tracks edits, undo, and load without a call site of its own.
+    Guides,
     /// Clone-brush source marker + "pick a source" hint. Persists across
     /// strokes: only the clone cursor module clears it, decoupled from the
     /// async dab that clobbers `Tool` every hover move.
@@ -395,9 +401,10 @@ pub enum OverlayChannel {
 
 impl OverlayChannel {
     /// Number of channels, the length of [`DarklyEngine::overlays`].
-    pub const COUNT: usize = 3;
+    pub const COUNT: usize = 4;
     /// Every channel in z-order (bottom to top). The merge iterates this.
-    pub const ALL: [OverlayChannel; Self::COUNT] = [Self::Selection, Self::CloneSource, Self::Tool];
+    pub const ALL: [OverlayChannel; Self::COUNT] =
+        [Self::Selection, Self::Guides, Self::CloneSource, Self::Tool];
 
     /// This channel's index into [`DarklyEngine::overlays`].
     pub(crate) const fn index(self) -> usize {
@@ -595,6 +602,19 @@ pub struct DarklyEngine {
     /// the painted layer.
     pub(crate) clone_source_layer: Option<LayerId>,
 
+    // --- Pen guides ---
+    /// How the brush may relate to `guide`-flagged vector objects (see
+    /// `engine/guides.rs`). Session state: an engaged constraint is the
+    /// artist's current editing choice, never serialized.
+    pub(crate) guide_mode: guides::GuideMode,
+    /// The stroke's flattened guide polylines (plane space), captured at
+    /// `begin_stroke` so a mid-stroke edit can't shift the wall out from
+    /// under an in-flight move. Empty while `guide_mode` is `Off`.
+    pub(crate) stroke_guides: Vec<guides::GuidePoly>,
+    /// Last clamped stroke point in plane coords — the wall mode tests
+    /// the segment from here to each new point.
+    pub(crate) stroke_last_point: Option<(f32, f32)>,
+
     // --- Diff rect (undo region computation) ---
     pub(crate) diff_rect: DiffRectPass,
     pub(crate) pending_undo_commit: Option<PendingUndoCommit>,
@@ -782,6 +802,9 @@ impl DarklyEngine {
             stabilizer_registry: StabilizerRegistry::new(),
             brush_blend_mode: 0,
             clone_source_anchor: None,
+            guide_mode: guides::GuideMode::default(),
+            stroke_guides: Vec::new(),
+            stroke_last_point: None,
             clone_source_layer: None,
             diff_rect,
             pending_undo_commit: None,

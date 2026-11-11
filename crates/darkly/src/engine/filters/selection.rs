@@ -24,7 +24,7 @@ use crate::gpu::layer_readback::{self, LayerReadbackExtent};
 use crate::gpu::overlay::{OverlayPrimitive, FLAG_CANVAS_SPACE, KIND_DASHED_LINE};
 use crate::gpu::readback;
 use crate::gpu::selection::{CombineMode, MorphOp};
-use crate::layer::LayerId;
+use crate::layer::{Layer, LayerId};
 use crate::mask::RasterizedMask;
 use crate::undo::SelectionAction;
 
@@ -293,6 +293,68 @@ impl DarklyEngine {
         let mask =
             crate::mask::rasterize_polygon_r8(self.doc.width, self.doc.height, &local, antialias);
         self.apply_selection_mask(mask, mode);
+    }
+
+    /// Convert one vector object's geometry into a selection: flatten its
+    /// `BezPath` (a baked path or a solved spline — same downstream) into a
+    /// polyline, map it through the object's canvas affine to plane space,
+    /// and feed the lasso polygon path. Open geometry is treated as a
+    /// closed region, matching lasso semantics: the implicit closing edge
+    /// is what "the shape" means for a cutout or mask. Multiple subpaths
+    /// keep only the first — the polygon rasterizer has no even-odd notion
+    /// and the common sources emit one path anyway. `Err` names the
+    /// failure: non-vector layer, missing object, a source with no curve
+    /// geometry (text), or a solve that produced nothing.
+    pub fn object_to_selection(
+        &mut self,
+        id: LayerId,
+        object: crate::layer::ObjectId,
+        mode: SelectionMode,
+        antialias: bool,
+    ) -> Result<(), String> {
+        let (obj, layer_affine) = match self.doc.layer(id) {
+            Some(Layer::Vector(v)) => (
+                v.object(object)
+                    .cloned()
+                    .ok_or_else(|| format!("no object {object:?} on layer"))?,
+                crate::engine::layers::transform_to_kurbo(&v.transform),
+            ),
+            _ => return Err(format!("layer {id:?} is not a vector layer")),
+        };
+        let path = obj
+            .source
+            .bezpath()
+            .ok_or_else(|| "object has no path geometry".to_string())?;
+        let g = layer_affine * obj.transform;
+        if g.determinant().abs() < 1e-12 {
+            return Err("object transform is singular".into());
+        }
+
+        // kurbo::flatten emits MoveTo/LineTo/ClosePath with cubics
+        // subdivided at the tolerance; only the vertices are needed.
+        const TOLERANCE: f64 = 0.25;
+        let mut verts: Vec<[f32; 2]> = Vec::new();
+        let mut first = true;
+        kurbo::flatten(path, TOLERANCE, |el| {
+            let p = match el {
+                kurbo::PathEl::MoveTo(p) => {
+                    if !first {
+                        return; // later subpaths: single-polygon selection
+                    }
+                    first = false;
+                    p
+                }
+                kurbo::PathEl::LineTo(p) => p,
+                _ => return,
+            };
+            let q = g * p;
+            verts.push([q.x as f32, q.y as f32]);
+        });
+        if verts.len() < 3 {
+            return Err("flattened path has no area".into());
+        }
+        self.select_lasso(&verts, mode, antialias, 0.0);
+        Ok(())
     }
 
     /// Convert a plane-space point to the window-local coordinates the
