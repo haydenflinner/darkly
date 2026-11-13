@@ -16,7 +16,28 @@
 
   <!-- darkly:app-description -->
   <description>
-    <p>Darkly is a GPU-native paint program built for artists. It has a powerful brush engine and dark arts to help you commune with your imagination.</p>
+    <p>Do you suffer from the oppressive sanity of rulers, guides, and nondestructive workflows? Break free with Darkly, home of happy accidents and beautiful catastrophes. Release your creativity from the bonds of logic. Madness isn&apos;t a bug, it&apos;s a feature.</p>
+    <p>Darkly does not want to be Photoshop, but it wants to be the best paint app for artists. It has a unique brush engine, and dark arts to help you commune with your imagination.</p>
+    <p>Darkly pledges to:</p>
+    <ul>
+      <li>🛐 Honor human imagination</li>
+      <li>⚛️ Run offline and without a login</li>
+      <li>☯️ Never steal or license your art</li>
+      <li>☮️ Stay free and open source forever</li>
+    </ul>
+    <p><em>Dark Arts</em></p>
+    <p>Veils are where Darkly gets its name; &quot;For now we see through a glass, darkly&quot;. They&apos;re a special layer that shrouds your canvas in a mysterious way, inviting you to see something that maybe wasn&apos;t there before.</p>
+    <p>Veils are nondestructive. You can paint as usual, behind the veil, and when you disable it, you&apos;ll see the full-res result.</p>
+    <p>Veils are essentially fancy shaders, and they are fun toys. But they have practical uses too:</p>
+    <ul>
+      <li>By hiding fine details, they can prevent premature fixation on detail, freeing you to focus on composition.</li>
+      <li>During the sketching / ideation phase, they can help with blank page syndrome and destructive self-criticism by giving you permission to be messy, and explore freely.</li>
+      <li>They can also help remedy art fatigue (losing eyes for a piece by staring at it for too long) by helping you see it through a fresh lens.</li>
+    </ul>
+    <p>Voids are a type of layer that specializes in pulling inspiration from outside sources.</p>
+    <p>You can use the Noise void to generate entropy, or Screenshare to stream another app (3D software, movie, or video game) directly into a layer. This is great for hybrid workflows, and situations where you need a quick reference, or want to try out different lighting or camera angles, without having to pose, render and paste over and over.</p>
+    <p>Voids support masks and blend modes. They are the natural complement to veils, and a natural integration point for other art programs like Blender, which has its own dedicated void 🧡</p>
+    <p>Darkly is in beta. Please report bugs and suggest features in Discord!</p>
   </description>
   <!-- /darkly:app-description -->
 
@@ -25,18 +46,88 @@
   <url type="homepage">https://darkly.art</url>
   <url type="bugtracker">https://github.com/darkly-art/darkly/issues</url>
   <url type="vcs-browser">https://github.com/darkly-art/darkly</url>
+  <url type="contact">https://discord.gg/kFz2FGhbpu</url>
 
   <screenshots>
     <screenshot type="default">
-      <image>https://darkly.art/editor-screenshot.png</image>
-      <caption>The Darkly editor</caption>
+      <image width="1920" height="973">https://darkly.art/flathub/editor.png</image>
+      <caption>Darkly editor</caption>
+    </screenshot>
+    <screenshot>
+      <video container="webm" codec="av1" width="1568" height="880">https://darkly.art/flathub/veils-demo.webm</video>
+      <caption>Painting behind veils</caption>
+    </screenshot>
+    <screenshot>
+      <image width="1472" height="802">https://raw.githubusercontent.com/darkly-art/darkly/dev/docs/images/graphics/effects-veils.jpg</image>
+      <caption>Veils</caption>
+    </screenshot>
+    <screenshot>
+      <video container="webm" codec="av1" width="1920" height="1080">https://darkly.art/flathub/hair-brush.webm</video>
+      <caption>Hair brush</caption>
+    </screenshot>
+    <screenshot>
+      <video container="webm" codec="av1" width="1920" height="1012">https://darkly.art/flathub/void-demo.webm</video>
+      <caption>Streaming Blender into a void</caption>
+    </screenshot>
+    <screenshot>
+      <image width="1920" height="970">https://darkly.art/flathub/brush-builder.png</image>
+      <caption>Node-based brush builder</caption>
     </screenshot>
   </screenshots>
 
   <content_rating type="oars-1.1"/>
 
-  <!-- darkly:app-releases -->
+  <!-- Filled from the v* tags by scripts/metainfo-releases.sh; do not edit by hand. -->
   <releases>
+    <release version="0.11.1" date="2026-10-20">
+      <url type="details">https://github.com/darkly-art/darkly/releases/tag/v0.11.1</url>
+      <description>
+        <ul>
+          <li>Release fixes (#158)</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.11.0" date="2026-10-20">
+      <url type="details">https://github.com/darkly-art/darkly/releases/tag/v0.11.0</url>
+      <description>
+        <ul>
+          <li>docs: link the readme header image to darkly.art (#132)</li>
+          <li>Compute brushes + smudge decomposition (#133)</li>
+          <li>Stabilization Improvements (#134)</li>
+          <li>Add stroke_path for whole-path offline strokes (#135)</li>
+          <li>Better gpu handling / fallbacks (#142)</li>
+          <li>Vector shapes (#143)</li>
+          <li>Color Jitter (#145)</li>
+          <li>Better artifact naming for releases (#149)</li>
+          <li>Clip Studio Paint hotkey presets (#150)</li>
+          <li>Store GPU undo regions as changed tiles, not bounding rects (#151)</li>
+          <li>Stroke editing (#154)</li>
+          <li>Fix veil reorder bug (#152)</li>
+          <li>Hotkey for switching brushes (#156)</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.10.0" date="2026-09-26">
+      <url type="details">https://github.com/darkly-art/darkly/releases/tag/v0.10.0</url>
+      <description>
+        <ul>
+          <li>Linux distro-friendly packaging and release automation (#126)</li>
+          <li>Small UI improvements (#124)</li>
+          <li>DPI and sensible DPI defaults (#118)</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.9.0" date="2026-09-25">
+      <url type="details">https://github.com/darkly-art/darkly/releases/tag/v0.9.0</url>
+      <description>
+        <ul>
+          <li>Dry media brush work (#117)</li>
+          <li>Customizable tool strip (#120)</li>
+          <li>Electron ci, publishing, packaging machinery (#121)</li>
+          <li>Dry media polish (#119)</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-09-10">
       <url type="details">https://github.com/darkly-art/darkly/releases/tag/v0.8.0</url>
       <description>
@@ -53,7 +144,7 @@
         </ul>
       </description>
     </release>
-    <release version="0.7.0" date="2026-07-31">
+    <release version="0.7.0" date="2026-07-30">
       <url type="details">https://github.com/darkly-art/darkly/releases/tag/v0.7.0</url>
       <description>
         <ul>
@@ -67,7 +158,7 @@
         </ul>
       </description>
     </release>
-    <release version="0.6.0" date="2026-07-26">
+    <release version="0.6.0" date="2026-07-14">
       <url type="details">https://github.com/darkly-art/darkly/releases/tag/v0.6.0</url>
       <description>
         <ul>
@@ -94,7 +185,7 @@
         </ul>
       </description>
     </release>
-    <release version="0.5.0" date="2026-07-09">
+    <release version="0.5.0" date="2026-06-27">
       <url type="details">https://github.com/darkly-art/darkly/releases/tag/v0.5.0</url>
       <description>
         <ul>
@@ -113,6 +204,18 @@
         </ul>
       </description>
     </release>
+    <release version="0.4.0" date="2026-06-13">
+      <url type="details">https://github.com/darkly-art/darkly/releases/tag/v0.4.0</url>
+    </release>
+    <release version="0.3.0" date="2026-06-09">
+      <url type="details">https://github.com/darkly-art/darkly/releases/tag/v0.3.0</url>
+    </release>
+    <release version="0.2.0" date="2026-06-03">
+      <url type="details">https://github.com/darkly-art/darkly/releases/tag/v0.2.0</url>
+    </release>
+    <release version="0.1.0" date="2026-05-29">
+      <url type="details">https://github.com/darkly-art/darkly/releases/tag/v0.1.0</url>
+    </release>
   </releases>
-  <!-- /darkly:app-releases -->
+
 </component>

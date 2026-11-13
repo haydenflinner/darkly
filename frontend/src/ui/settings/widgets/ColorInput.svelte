@@ -52,7 +52,7 @@
         onchange={(c) => onchange(colorToHexRgb(c))}
         onclose={() => (open = false)}
         {scope}
-        anchor={swatch!}
+        anchor={() => swatch!.getBoundingClientRect()}
     />
 {/if}
 
@@ -62,7 +62,9 @@
         width: 32px;
         height: 28px;
         padding: 0;
-        border: 1px solid var(--bg-hover);
+        /* The same outline the fg/bg swatches wear: a color matching the
+           panel background still reads as a swatch. */
+        border: 1px solid var(--text-dim);
         border-radius: 4px;
         cursor: pointer;
     }

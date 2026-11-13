@@ -13,8 +13,8 @@
      * tooltip, focus, and keep-open scope.
      *
      * In `popup` mode a swatch click opens the color wheel for that swatch. In
-     * `select` mode (the docked color panel, which shows its own wheel) a click
-     * only reports which swatch the host should edit.
+     * `select` mode (the docked color panel, which hosts the color editor
+     * itself) a click only reports which swatch the host should edit.
      */
     import { app } from '../../state/app.svelte';
     import type { Color } from '../../lib/color';
@@ -77,8 +77,8 @@
         <Icon name="fa6-solid:arrow-right-arrow-left" />
     </button>
     <button class="glyph reset" onclick={() => app.resetColors()} title={tooltipForAction('Reset colors', 'resetColors')}>
-        <span class="mini bg"></span>
-        <span class="mini fg"></span>
+        <span class="mini bg" style:background={css(app.defaultColors.background)}></span>
+        <span class="mini fg" style:background={css(app.defaultColors.foreground)}></span>
     </button>
 </div>
 
@@ -89,7 +89,8 @@
         onchange={(c) => open && write(open, c)}
         onclose={() => (open = null)}
         scope={SCOPE}
-        anchor={(open === 'foreground' ? fgButton : bgButton)!}
+        anchor={() => (open === 'foreground' ? fgButton : bgButton)!.getBoundingClientRect()}
+        paint
     />
 {/if}
 
@@ -162,12 +163,10 @@
     .mini.fg {
         top: 0;
         left: 0;
-        background: #000;
         z-index: 1;
     }
     .mini.bg {
         right: 0;
         bottom: 0;
-        background: #fff;
     }
 </style>

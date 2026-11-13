@@ -17,7 +17,7 @@ import { validateOverrides } from './validate';
  * Three layers, all sourced from Rust at runtime:
  *
  *   defaults    ← editor-AGNOSTIC defaults.yaml (always applied)
- *   overlay     ← one of {Krita, Photoshop, GIMP}, selected by `app.baseSettings`
+ *   overlay     ← one editor overlay from `presets/`, selected by `app.baseSettings`
  *   user        ← personal customizations on top
  *
  * Resolution: `user[key] ?? overlay[active][key] ?? defaults[key]`.
@@ -136,6 +136,18 @@ class ConfigStore {
         void this.#version;
         if (!this.#ready) return undefined;
         return config_get(key);
+    }
+
+    /** A numeric pref, or `fallback` where the store has no usable value for
+     *  it: before `init()` resolves, and for a key whose stored value has been
+     *  hand-edited into something that is not a finite number.
+     *
+     *  `get` returns `unknown`, so every numeric reader has to narrow it, and
+     *  narrowing it by hand is how one call site ends up validating while the
+     *  next one casts. This is the one place that does it. */
+    number(key: string, fallback: number): number {
+        const raw = this.get(key);
+        return typeof raw === 'number' && Number.isFinite(raw) ? raw : fallback;
     }
 
     /** Layer-below-user value (overlay → defaults). Used by the Settings

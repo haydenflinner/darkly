@@ -116,8 +116,14 @@ fn render_liquify_dabs_on(
     // Compile before allocating: the terminal decides the scratch format,
     // and liquify's is a warp field rather than colour.
     let mut runner: BrushGraphRunner = compile_graph(&graph).expect("brush compiles");
-    let mut stroke_buffer =
-        StrokeBuffer::new(&device, CANVAS, CANVAS, &pipelines, runner.scratch_format());
+    let mut stroke_buffer = StrokeBuffer::new(
+        &device,
+        CANVAS,
+        CANVAS,
+        &pipelines,
+        runner.scratch_format(),
+        runner.dab_pass(),
+    );
 
     let pre_stroke = darkly::gpu::paint_target::GpuPaintTarget::from_canvas_texture(
         &layer_texture,
@@ -148,6 +154,8 @@ fn render_liquify_dabs_on(
                 canvas_origin: [0, 0],
                 blend_mode: 0,
                 view_rotation: 0.0,
+                // Tests construct reference-DPI engines, so a reference pixel is a canvas pixel.
+                dpi_factor: 1.0,
                 perf: BrushPerfCounters::default(),
                 stroke: Some(StrokeResources {
                     scratch,
@@ -169,7 +177,7 @@ fn render_liquify_dabs_on(
 
     {
         let mut ctx = make_ctx!("liquify-test-begin");
-        runner.begin_stroke(&mut ctx);
+        runner.begin_stroke(&mut ctx, None);
         queue.submit([ctx.encoder.finish()]);
     }
     {
@@ -461,6 +469,7 @@ fn liquify_stroke_through_engine_preserves_detail() {
         .expect("liquify brush loads");
 
     // A long drag: enough events to cross several checkpoint intervals.
+    engine.set_foreground_color([1.0, 0.0, 0.0, 1.0]);
     engine.begin_stroke(layer_id).unwrap();
     for step in 0..=60 {
         let t = step as f32 / 60.0;
@@ -473,10 +482,6 @@ fn liquify_stroke_through_engine_preserves_detail() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: step as f64 * 16.0,
-            cr: 1.0,
-            cg: 0.0,
-            cb: 0.0,
-            ca: 1.0,
         });
     }
     engine.end_stroke();
@@ -533,7 +538,7 @@ fn shipped_liquify_spacing_matches_the_declared_ratio() {
         .expect("Liquify is shipped")
         .metadata
         .graph;
-    let spacing = darkly::brush::nodes::brush_settings::spacing_config(&graph);
+    let spacing = darkly::brush::nodes::brush_settings::spacing_config(&graph, 1.0);
 
     assert!(
         (spacing.ratio - LIQUIFY_SPACING_RATIO).abs() < 1e-6,

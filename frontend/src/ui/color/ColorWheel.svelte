@@ -17,6 +17,7 @@
         barycentricFor,
         hsvFromColor,
         hueAt,
+        HUE_STOPS,
         pointForHue,
         pointForSv,
         regionAt,
@@ -59,9 +60,10 @@
 
     let wheel: HTMLDivElement;
     let triangle: HTMLCanvasElement;
-    // The region latched on pointerdown: a drag that leaves the ring keeps
-    // steering the hue, a drag out of the triangle keeps steering s/v.
-    let dragging: WheelRegion = null;
+    // The axis latched on pointerdown, held for the whole drag: a drag that
+    // starts on the hue keeps steering the hue wherever it goes, and likewise
+    // for saturation/value.
+    let dragging: WheelRegion | null = null;
 
     // Painted per hue change: linear RGB over the barycentric weights is
     // exactly HSV at this hue, so the triangle is a plain per-pixel loop with
@@ -117,17 +119,15 @@
 
     function steer(region: WheelRegion, e: PointerEvent) {
         const { x, y } = local(e);
-        if (region === 'ring') hsv = { ...hsv, h: hueAt(geometry, x, y) };
-        else if (region === 'triangle') hsv = { ...hsv, ...svAt(geometry, hsv.h, x, y) };
+        if (region === 'hue') hsv = { ...hsv, h: hueAt(geometry, x, y) };
+        else hsv = { ...hsv, ...svAt(geometry, hsv.h, x, y) };
         oninput(hsvToRgb(hsv, value.a));
     }
 
-    /** A press outside the ring and the triangle is not a drag: the veto keeps
-     *  it an ordinary click on the surrounding box. */
-    function onPointerDown(e: PointerEvent): boolean | void {
+    /** Every press in the wheel's box steers one axis (`regionAt`). */
+    function onPointerDown(e: PointerEvent) {
         const { x, y } = local(e);
         const region = regionAt(geometry, hsv.h, x, y);
-        if (!region) return false;
         dragging = region;
         steer(region, e);
     }
@@ -147,6 +147,7 @@
     style:width="{size}px"
     style:height="{size}px"
     style:--ring="{geometry.ringWidth}px"
+    style:--hue-stops={HUE_STOPS.join(', ')}
     use:pointerDrag={{
         onStart: onPointerDown,
         onMove: (_dx, _dy, e) => { if (dragging) steer(dragging, e); },
@@ -183,7 +184,7 @@
     }
     .ring {
         border-radius: 50%;
-        background: conic-gradient(from 90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+        background: conic-gradient(from 90deg, var(--hue-stops));
         -webkit-mask: radial-gradient(
             circle,
             transparent calc(50% - var(--ring)),

@@ -15,40 +15,55 @@ impl DarklyEngine {
     /// leaves the stack as a result (the cleared redo history plus anything
     /// overflowed past `max_steps`).
     ///
-    /// Flushes any pending diff-based undo commit from a just-finished brush
-    /// stroke first, so the on-stack action ordering matches the artist's
-    /// temporal order: a "paint, then duplicate, then undo" sequence first
-    /// undoes the duplicate.
+    /// Commits what is still pending first, oldest first (the queued diff
+    /// commits of finished fills and gradients, then the last brush stroke),
+    /// so the on-stack action ordering matches the artist's temporal order:
+    /// a "paint, then duplicate, then undo" sequence first undoes the
+    /// duplicate.
     pub(crate) fn push_undo(&mut self, action: Box<dyn UndoAction>) {
-        self.flush_pending_undo_commit();
+        self.flush_pending_undo_commits();
+        self.settle_last_stroke();
         if self.history_suppressed {
-            // The mutation already happened — only the record is
-            // skipped. Redo history survives: a suppressed view-sync op
-            // isn't fresh work that should invalidate a redo chain.
+            // The mutation already happened, only the record is skipped.
+            // Redo history survives: a suppressed view-sync op isn't fresh
+            // work that should invalidate a redo chain.
             return;
         }
-        self.push_undo_recorded(action);
+        self.push_undo_without_flush(action);
     }
 
-    /// Push without consulting `history_suppressed`. The deferred
-    /// stroke commit goes through here: it's bookkeeping for a stroke
-    /// that already began, not a new action, so a suppression window
-    /// must not drop it.
-    pub(crate) fn push_undo_recorded(&mut self, action: Box<dyn UndoAction>) {
+    /// [`Self::push_undo`] without committing what is pending, for the paths
+    /// that commit it in order, and without consulting `history_suppressed`:
+    /// the deferred stroke commit goes through here, and it's bookkeeping for
+    /// a stroke that already began, not a new action, so a suppression
+    /// window must not drop it.
+    pub(crate) fn push_undo_without_flush(&mut self, action: Box<dyn UndoAction>) {
         let evicted = self.undo_stack.push(&mut self.doc, action);
-        for mut e in evicted {
-            e.on_evict(&mut self.compositor);
-        }
+        self.release_evicted(evicted);
+    }
+
+    /// Push the undo entry of an edit whose change the document already
+    /// recorded (see [`crate::undo::UndoStack::push_recorded`]). The last
+    /// stroke's settle is its only caller, and commits what precedes it.
+    pub(crate) fn push_recorded_undo(&mut self, action: Box<dyn UndoAction>) {
+        let evicted = self.undo_stack.push_recorded(action);
+        self.release_evicted(evicted);
     }
 
     /// Coalesce variant. Mirrors [`Self::push_undo`] for property-change
     /// actions that may merge into the existing top step.
     pub(crate) fn coalesce_property_undo(&mut self, action: PropertyAction) {
-        self.flush_pending_undo_commit();
+        self.flush_pending_undo_commits();
+        self.settle_last_stroke();
         if self.history_suppressed {
             return;
         }
         let evicted = self.undo_stack.coalesce_property(&mut self.doc, action);
+        self.release_evicted(evicted);
+    }
+
+    /// Run `on_evict` on every action that left the stack.
+    fn release_evicted(&mut self, evicted: Vec<Box<dyn UndoAction>>) {
         for mut e in evicted {
             e.on_evict(&mut self.compositor);
         }

@@ -1,10 +1,15 @@
 <script lang="ts">
     /**
-     * The color wheel as an ad-hoc floating surface next to whatever opened
+     * The color editor as an ad-hoc floating surface next to whatever opened
      * it. Fixed-positioned from the anchor's screen rect and clamped to the
      * viewport, so it escapes every clipping ancestor (panel bodies, modal
      * dialogs, scrolling preference lists) while staying in the trigger's
      * DOM subtree, which keeps it inside a `<dialog>`'s top layer.
+     *
+     * The anchor is a rect rather than an element, so a host with no element
+     * to hang it off (the palette popup, which anchors at the pen) needs no
+     * invented DOM node. A thunk rather than a value, so the reads inside it
+     * are tracked and the surface follows an anchor that moves.
      *
      * Dismissal is the `watchDismiss` rule: the host tags its trigger and this
      * surface tags itself with `data-keep-open={scope}`; a pointerdown anywhere
@@ -14,8 +19,7 @@
     import type { Color } from '../../lib/color';
     import { clampToViewport, VIEWPORT_MARGIN as MARGIN } from '../../lib/viewportClamp';
     import { watchDismiss } from '../../lib/dismiss';
-    import ColorWheel from './ColorWheel.svelte';
-    import HexField from './HexField.svelte';
+    import ColorEditor from './ColorEditor.svelte';
 
     let {
         value,
@@ -24,17 +28,19 @@
         onclose,
         scope,
         anchor,
+        paint = false,
     }: {
         value: Color;
         oninput: (c: Color) => void;
         onchange: (c: Color) => void;
         onclose: () => void;
         scope: string;
-        anchor: HTMLElement;
+        anchor: () => DOMRect;
+        /** The host edits a paint color: offer the editor's painting tabs. */
+        paint?: boolean;
     } = $props();
 
     const WHEEL_SIZE = 200;
-
 
     let surface = $state<HTMLDivElement | null>(null);
     let pos = $state({ x: 0, y: 0 });
@@ -43,7 +49,7 @@
     // clamp into the viewport so a bottom-corner trigger still shows it whole.
     $effect(() => {
         if (!surface) return;
-        const a = anchor.getBoundingClientRect();
+        const a = anchor();
         const w = surface.offsetWidth, h = surface.offsetHeight;
         let x = a.right + MARGIN;
         if (x + w > window.innerWidth - MARGIN) x = a.left - MARGIN - w;
@@ -52,6 +58,8 @@
 
     $effect(() => watchDismiss(scope, onclose));
 
+    // Capture phase, so the Escape this consumes never reaches the hotkeys
+    // (where it would discard an open edit session).
     function onKeydown(e: KeyboardEvent) {
         if (e.key !== 'Escape') return;
         e.preventDefault();
@@ -60,7 +68,7 @@
 
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydowncapture={onKeydown} />
 
 <div
     class="color-popup"
@@ -71,8 +79,7 @@
     role="dialog"
     aria-label="Color"
 >
-    <ColorWheel {value} {oninput} {onchange} size={WHEEL_SIZE} />
-    <HexField {value} {onchange} />
+    <ColorEditor {value} {oninput} {onchange} {paint} size={WHEEL_SIZE} />
 </div>
 
 <style>

@@ -122,12 +122,17 @@ impl DarklySession {
     /// A `null`/`undefined` canvas must reject, not throw mid-poll: an
     /// exception escaping the futures task leaves the returned promise
     /// pending forever, wedging the caller's `await`.
+    /// `dpi` of `null`/`undefined` derives the document's DPI from its pixel
+    /// size, so the new document has the reference's physical area and every
+    /// brush keeps its physical mark size on it. Pass a number only when the
+    /// artist named one.
     #[wasm_bindgen(js_name = createHandle)]
     pub async fn create_handle(
         &self,
         canvas: web_sys::HtmlCanvasElement,
         doc_width: u32,
         doc_height: u32,
+        dpi: Option<f32>,
     ) -> Result<DarklyHandle, JsError> {
         let cv: &JsValue = canvas.as_ref();
         if cv.is_null() || cv.is_undefined() {
@@ -174,6 +179,7 @@ impl DarklySession {
             self.tool_session.clone(),
             doc_width,
             doc_height,
+            dpi,
         )))
     }
 }
@@ -287,10 +293,13 @@ impl DarklyHandle {
     ///
     /// Null-canvas guard: see `createHandle` — a mid-poll exception would
     /// leave the promise pending forever.
+    /// `dpi` behaves as it does for `createHandle`: `null`/`undefined`
+    /// derives it from the pixel size.
     pub async fn create(
         canvas: web_sys::HtmlCanvasElement,
         doc_width: u32,
         doc_height: u32,
+        dpi: Option<f32>,
     ) -> Result<DarklyHandle, JsError> {
         let cv: &JsValue = canvas.as_ref();
         if cv.is_null() || cv.is_undefined() {
@@ -318,9 +327,7 @@ impl DarklyHandle {
             )
             .await;
 
-        Ok(DarklyHandle::from_engine(DarklyEngine::new(
-            gpu, doc_width, doc_height,
-        )))
+        Ok(DarklyHandle::from_engine(DarklyEngine::standalone(gpu, doc_width, doc_height, dpi)))
     }
 
     // =======================================================================
@@ -385,7 +392,7 @@ impl DarklyHandle {
             let p = e.last_render_phases();
             log::warn!(
                 "[frame-perf] slow frame={:.2}ms drain={:.2}ms (pending-img={:.2}ms x{} | fifo={:.2}ms x{}) render={:.2}ms \
-                 [render breakdown: poll={:.2}ms thumb={:.2}ms anim={:.2}ms composite={:.2}ms]",
+                 [render breakdown: stroke={:.2}ms poll={:.2}ms thumb={:.2}ms anim={:.2}ms composite={:.2}ms]",
                 frame_us as f32 / 1000.0,
                 drain_us as f32 / 1000.0,
                 pending_us as f32 / 1000.0,
@@ -393,6 +400,7 @@ impl DarklyHandle {
                 (drain_us.saturating_sub(pending_us)) as f32 / 1000.0,
                 fifo_count,
                 render_us as f32 / 1000.0,
+                p.stroke_us as f32 / 1000.0,
                 p.poll_us as f32 / 1000.0,
                 p.thumb_us as f32 / 1000.0,
                 p.anim_us as f32 / 1000.0,

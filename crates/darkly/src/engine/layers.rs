@@ -36,6 +36,7 @@ fn kurbo_to_affine(a: kurbo::Affine) -> crate::transform::Affine2D {
 /// drag, and a gizmo drag don't merge into a single undo step.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VectorOpKind {
+    /// The text string, or a shape's generator parameters.
     Content,
     Style,
     Transform,
@@ -67,9 +68,14 @@ fn vector_coalesce_tag(object: crate::layer::ObjectId, op: VectorOpKind) -> u64 
     (object.0 << 3) | op
 }
 
+/// A solid brush from RGBA 0-255.
+pub(super) fn solid_rgba(c: [u8; 4]) -> peniko::Brush {
+    peniko::Brush::Solid(peniko::Color::from_rgba8(c[0], c[1], c[2], c[3]))
+}
+
 /// Extract an RGBA byte tuple from an optional solid fill, defaulting to opaque
 /// black for a missing or non-solid brush (mirrors the render-time fallback).
-fn brush_rgba(fill: &Option<peniko::Brush>) -> [u8; 4] {
+pub(super) fn brush_rgba(fill: &Option<peniko::Brush>) -> [u8; 4] {
     match fill {
         Some(peniko::Brush::Solid(c)) => {
             let rgba8 = c.to_rgba8();
@@ -155,8 +161,7 @@ impl DarklyEngine {
             .ensure_raster_layer(&self.gpu.device, &self.gpu.queue, id, bounds);
         self.compositor.mark_dirty();
 
-        let slot = self.doc.slot_of(id).unwrap_or_default();
-        self.push_undo(Box::new(EntityAddAction::new(id, slot)));
+        self.record_entity_add(id);
 
         id
     }
@@ -267,6 +272,12 @@ impl DarklyEngine {
             }
             crate::layer::ObjectSource::Path(p) => Some(p.bounding_box()),
             crate::layer::ObjectSource::Spline(s) => s.to_bezpath().map(|p| p.bounding_box()),
+            // Every family's outline is box-tight to `[0, w] x [0, h]` (pinned
+            // by `shape::tests::every_family_outline_is_closed_and_box_tight`),
+            // so the box is the bbox without tessellating.
+            crate::layer::ObjectSource::Shape(s) => {
+                Some(kurbo::Rect::new(0.0, 0.0, s.width as f64, s.height as f64))
+            }
         }
     }
 
@@ -320,21 +331,65 @@ impl DarklyEngine {
         color: [u8; 4],
         anchor: Option<LayerId>,
     ) -> (LayerId, crate::layer::ObjectId) {
-        let id = self.doc.add_vector_layer(anchor);
-        let fill = peniko::Brush::Solid(peniko::Color::from_rgba8(
-            color[0], color[1], color[2], color[3],
-        ));
-        let obj = crate::layer::VectorObject::text(text, kurbo::Affine::translate((x, y)), fill);
+        let obj = crate::layer::VectorObject::text(
+            text,
+            kurbo::Affine::translate((x, y)),
+            solid_rgba(color),
+        );
+        self.add_vector_layer_with("Text", obj, anchor)
+    }
+
+    /// Add a vector layer named `"<stem> N"` seeded with one object. Returns
+    /// the new layer id and the stamped object id. One undo step.
+    pub(crate) fn add_vector_layer_with(
+        &mut self,
+        stem: &str,
+        obj: crate::layer::VectorObject,
+        anchor: Option<LayerId>,
+    ) -> (LayerId, crate::layer::ObjectId) {
+        let (id, object_id) = self.insert_vector_layer_with(stem, obj, anchor);
+        self.record_entity_add(id);
+        (id, object_id)
+    }
+
+    /// [`Self::add_vector_layer_with`] without the undo step: the layer is in
+    /// the document and rendered, and the caller either records it later with
+    /// [`Self::record_entity_add`] or drops it with
+    /// [`Self::discard_unrecorded_layer`].
+    pub(crate) fn insert_vector_layer_with(
+        &mut self,
+        stem: &str,
+        obj: crate::layer::VectorObject,
+        anchor: Option<LayerId>,
+    ) -> (LayerId, crate::layer::ObjectId) {
+        let id = self.doc.add_vector_layer(stem, anchor);
         let object_id = match self.doc.find_node_mut(id) {
             Some(LayerNode::Layer(Layer::Vector(v))) => v.push_object(obj),
             _ => crate::layer::ObjectId::UNASSIGNED,
         };
         self.sync_vector_layer(id);
         self.compositor.mark_dirty();
+        (id, object_id)
+    }
 
+    /// Push the one undo step for an entity (layer, group, filter) inserted
+    /// without one.
+    pub(crate) fn record_entity_add(&mut self, id: LayerId) {
         let slot = self.doc.slot_of(id).unwrap_or_default();
         self.push_undo(Box::new(EntityAddAction::new(id, slot)));
-        (id, object_id)
+    }
+
+    /// Remove a layer inserted without an undo step: nothing on the stack
+    /// refers to it, so it is purged rather than detached. A layer no longer
+    /// reachable from the root was adopted by a recorded edit (flatten takes
+    /// it into its own undo step) and is left alone.
+    pub(crate) fn discard_unrecorded_layer(&mut self, id: LayerId) {
+        if !self.doc.is_ancestor_of(self.doc.root, id) {
+            return;
+        }
+        self.doc.remove_entity(id);
+        self.compositor.dispose_layer(id);
+        self.compositor.mark_dirty();
     }
 
     /// Add a text object to an *existing* vector layer, placed so its origin
@@ -355,10 +410,11 @@ impl DarklyEngine {
             Some(Layer::Vector(v)) => v.objects.clone(),
             _ => return None,
         };
-        let fill = peniko::Brush::Solid(peniko::Color::from_rgba8(
-            color[0], color[1], color[2], color[3],
-        ));
-        let obj = crate::layer::VectorObject::text(text, kurbo::Affine::translate((x, y)), fill);
+        let obj = crate::layer::VectorObject::text(
+            text,
+            kurbo::Affine::translate((x, y)),
+            solid_rgba(color),
+        );
         let object_id = match self.doc.find_node_mut(layer_id) {
             Some(LayerNode::Layer(Layer::Vector(v))) => v.push_object(obj),
             _ => return None,
@@ -508,7 +564,7 @@ impl DarklyEngine {
         anchor: Option<LayerId>,
     ) -> Option<(LayerId, crate::layer::ObjectId)> {
         let shape = Self::spline_shape_from_plane(knots, closed, ends, kurbo::Affine::IDENTITY)?;
-        let id = self.doc.add_vector_layer(anchor);
+        let id = self.doc.add_vector_layer("Path", anchor);
         let obj = spline_object(shape, color, stroke_w);
         let object_id = match self.doc.find_node_mut(id) {
             Some(LayerNode::Layer(Layer::Vector(v))) => v.push_object(obj),
@@ -727,9 +783,7 @@ impl DarklyEngine {
                 }
             }
             if let Some(c) = color {
-                obj.fill = Some(peniko::Brush::Solid(peniko::Color::from_rgba8(
-                    c[0], c[1], c[2], c[3],
-                )));
+                obj.fill = Some(solid_rgba(c));
             }
         });
     }
@@ -804,7 +858,7 @@ impl DarklyEngine {
                     color: brush_rgba(&obj.fill),
                     box_size: t.layout.area_size(),
                 }),
-                crate::layer::ObjectSource::Path(_) | crate::layer::ObjectSource::Spline(_) => None,
+                _ => None,
             })
             .collect()
     }
@@ -902,8 +956,7 @@ impl DarklyEngine {
     pub fn add_group(&mut self, anchor: Option<LayerId>) -> LayerId {
         let id = self.doc.add_group(anchor);
 
-        let slot = self.doc.slot_of(id).unwrap_or_default();
-        self.push_undo(Box::new(EntityAddAction::new(id, slot)));
+        self.record_entity_add(id);
 
         id
     }
@@ -1060,8 +1113,7 @@ impl DarklyEngine {
         // this adds the undo entry that makes it a standalone user action.
         let id = self.create_void_layer(void_type, params, anchor, transform_override)?;
 
-        let slot = self.doc.slot_of(id).unwrap_or_default();
-        self.push_undo(Box::new(EntityAddAction::new(id, slot)));
+        self.record_entity_add(id);
 
         Some(id)
     }
@@ -1142,8 +1194,7 @@ impl DarklyEngine {
             .add_filter_layer(pipeline.to_string(), display_label, params, anchor);
         self.compositor.mark_dirty();
 
-        let slot = self.doc.slot_of(id).unwrap_or_default();
-        self.push_undo(Box::new(EntityAddAction::new(id, slot)));
+        self.record_entity_add(id);
 
         Some(id)
     }
@@ -1484,7 +1535,7 @@ impl DarklyEngine {
 
     #[handler]
     pub fn remove_layer(&mut self, id: LayerId) -> Result<(), String> {
-        if !self.resolve_transform_conflict() {
+        if !self.resolve_pending_edits() {
             return Err("Active transform could not be committed".into());
         }
         if !self.doc.is_node_editable(id) {
@@ -1550,7 +1601,7 @@ impl DarklyEngine {
     /// removing the editable set would leave zero layers in the document.
     #[handler]
     pub fn remove_layers(&mut self, ids: Vec<LayerId>) -> Result<usize, String> {
-        if !self.resolve_transform_conflict() {
+        if !self.resolve_pending_edits() {
             return Err("Active transform could not be committed".into());
         }
         let mut editable = Vec::with_capacity(ids.len());
@@ -1599,7 +1650,7 @@ impl DarklyEngine {
 
     #[handler]
     pub fn move_layer(&mut self, id: LayerId, target: MoveTarget) -> Result<(), String> {
-        if !self.resolve_transform_conflict() {
+        if !self.resolve_pending_edits() {
             return Err("Active transform could not be committed".into());
         }
         self.check_screen_space_move(id, target)?;
@@ -1680,7 +1731,7 @@ impl DarklyEngine {
     /// self-referential).
     #[handler]
     pub fn move_layers(&mut self, ids: Vec<LayerId>, target: MoveTarget) -> Result<usize, String> {
-        if !self.resolve_transform_conflict() {
+        if !self.resolve_pending_edits() {
             return Err("Active transform could not be committed".into());
         }
         let target_id = target.reference();
@@ -1864,7 +1915,7 @@ impl DarklyEngine {
     /// Set the `locked` flag on any node: layer, group, or filter.
     #[handler]
     pub fn set_node_locked(&mut self, id: LayerId, locked: bool) {
-        if !self.resolve_transform_conflict() {
+        if !self.resolve_pending_edits() {
             return;
         }
         let old_locked = if let Some(node) = self.doc.find_node_mut(id) {
@@ -1902,7 +1953,7 @@ impl DarklyEngine {
         if self.isolated_node == id {
             return self.isolated_node;
         }
-        if !self.resolve_transform_conflict() {
+        if !self.resolve_pending_edits() {
             return self.isolated_node;
         }
         self.isolated_node = id;
@@ -1969,6 +2020,7 @@ impl DarklyEngine {
             thumbnail_version: self.thumbnail_version(),
             dirty: self.is_dirty(),
             has_selection: self.has_selection(),
+            edit_session: self.active_edit_session().map(|edit| edit.kind()),
             canvas_origin_x: rect.origin.x,
             canvas_origin_y: rect.origin.y,
             canvas_width: rect.width,
@@ -1992,6 +2044,14 @@ impl DarklyEngine {
     #[handler]
     pub fn set_document_name(&mut self, name: String) {
         self.doc.name = name;
+    }
+
+    /// The document's DPI in pixels per inch. Describes the intended
+    /// physical size of the canvas. Set through `rescale_image`, its sole
+    /// mutator.
+    #[handler]
+    pub fn document_dpi(&self) -> f32 {
+        self.doc.dpi
     }
 
     #[handler]

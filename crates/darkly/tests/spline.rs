@@ -208,6 +208,7 @@ fn paint_alpha_at(engine: &DarklyEngine, pixels: &[u8], layer: LayerId, x: i32, 
 /// A horizontal stroke across the canvas window at plane row `y` — with a
 /// selection live, only the selected span receives paint.
 fn stroke_row(engine: &mut DarklyEngine, layer: LayerId, y: f32, x0: f32, x1: f32) {
+    engine.set_foreground_color([1.0, 1.0, 1.0, 1.0]);
     engine.begin_stroke(layer).unwrap();
     let steps = 32;
     for i in 0..=steps {
@@ -221,10 +222,6 @@ fn stroke_row(engine: &mut DarklyEngine, layer: LayerId, y: f32, x0: f32, x1: f3
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: i as f64 * 16.0,
-            cr: 1.0,
-            cg: 1.0,
-            cb: 1.0,
-            ca: 1.0,
         });
     }
     engine.end_stroke();
@@ -443,6 +440,7 @@ fn set_brush_size(engine: &mut DarklyEngine, size: f32) {
 
 /// A vertical stroke down plane column `x` from `y0` to `y1`.
 fn stroke_col(engine: &mut DarklyEngine, layer: LayerId, x: f32, y0: f32, y1: f32) {
+    engine.set_foreground_color([1.0, 1.0, 1.0, 1.0]);
     engine.begin_stroke(layer).unwrap();
     let steps = 48;
     for i in 0..=steps {
@@ -456,10 +454,6 @@ fn stroke_col(engine: &mut DarklyEngine, layer: LayerId, x: f32, y0: f32, y1: f3
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: i as f64 * 16.0,
-            cr: 1.0,
-            cg: 1.0,
-            cb: 1.0,
-            ca: 1.0,
         });
     }
     engine.end_stroke();

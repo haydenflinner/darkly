@@ -1,6 +1,13 @@
 use darkly::config::{self, ConfigValue};
 use wasm_bindgen::prelude::*;
 
+/// Darkly's version (`darkly::VERSION`), for the About modal. The engine is
+/// the one place it is derived; the frontend reads it from here.
+#[wasm_bindgen]
+pub fn version() -> String {
+    darkly::VERSION.into()
+}
+
 /// On-disk schema version for `user_settings.json`. The frontend stamps
 /// every write with this and rejects loads whose version doesn't match.
 #[wasm_bindgen]
@@ -57,7 +64,7 @@ pub fn config_reset_all() {
     config::reset_all();
 }
 
-/// List equal-status overlay names (e.g. `["GIMP", "Krita", "Photoshop"]`).
+/// List equal-status overlay names, one per editor overlay in `presets/`.
 /// Order is alphabetical so no editor is privileged.
 #[wasm_bindgen]
 pub fn config_base_names() -> JsValue {

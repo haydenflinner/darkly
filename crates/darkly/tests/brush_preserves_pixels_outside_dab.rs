@@ -70,8 +70,14 @@ fn render_one_dab(brush_name: &str, color: [f32; 4], canvas: &[u8]) -> Vec<u8> {
     // colour. Hardcoding a colour format here silently gives liquify the
     // wrong surface and wipes the layer.
     let mut runner: BrushGraphRunner = compile_graph(&graph).expect("brush compiles");
-    let mut stroke_buffer =
-        StrokeBuffer::new(&device, CANVAS, CANVAS, &pipelines, runner.scratch_format());
+    let mut stroke_buffer = StrokeBuffer::new(
+        &device,
+        CANVAS,
+        CANVAS,
+        &pipelines,
+        runner.scratch_format(),
+        runner.dab_pass(),
+    );
 
     let pre_stroke = darkly::gpu::paint_target::GpuPaintTarget::from_canvas_texture(
         &layer_texture,
@@ -102,6 +108,8 @@ fn render_one_dab(brush_name: &str, color: [f32; 4], canvas: &[u8]) -> Vec<u8> {
                 canvas_origin: [0, 0],
                 blend_mode: 0,
                 view_rotation: 0.0,
+                // Tests construct reference-DPI engines, so a reference pixel is a canvas pixel.
+                dpi_factor: 1.0,
                 perf: BrushPerfCounters::default(),
                 stroke: Some(StrokeResources {
                     scratch,
@@ -123,7 +131,7 @@ fn render_one_dab(brush_name: &str, color: [f32; 4], canvas: &[u8]) -> Vec<u8> {
 
     {
         let mut ctx = make_ctx!("brush-untouched-begin");
-        runner.begin_stroke(&mut ctx);
+        runner.begin_stroke(&mut ctx, None);
         queue.submit([ctx.encoder.finish()]);
     }
     {

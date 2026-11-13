@@ -7,9 +7,19 @@
         type FlagLink,
         type Instructions,
     } from '../gpuErrorInstructions';
+    import AnnouncementBanner from './AnnouncementBanner.svelte';
+    import { announcement } from '../state/announcement.svelte';
 
-    let { failure, platform }: { failure: GpuCheckFailure; platform: Platform } =
-        $props();
+    let {
+        failure,
+        platform,
+        diagnostics,
+    }: {
+        failure: GpuCheckFailure;
+        platform: Platform;
+        /** What the desktop host saw while trying its launch profiles. */
+        diagnostics?: string[];
+    } = $props();
 
     const primary = $derived(instructionsFor(platform));
     const others = $derived(
@@ -33,6 +43,8 @@
         failure.reason === 'fallback-adapter' ? failure.adapterInfo : undefined,
     );
 
+    const diagnosticsText = $derived(diagnostics?.join('\n'));
+
     let copied = $state<string | null>(null);
     let copyTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -52,6 +64,16 @@
 </script>
 
 <div class="gpu-error-root">
+    <!-- The reader who could not boot is the one most likely to need whatever
+         the build is announcing, bug-report links above all. -->
+    {#if announcement.visible}
+        <!-- Already as loaded as this path gets: there is no engine to wait on. -->
+        <AnnouncementBanner
+            html={announcement.html}
+            ready
+            ondismiss={() => announcement.dismiss()}
+        />
+    {/if}
     <main class="gpu-error">
         <h1>{headline}</h1>
         <p class="cause">{causeFor(failure)}</p>
@@ -80,6 +102,23 @@
                 </dl>
                 <p class="hint">
                     Include these values if you file a bug: they describe the adapter the browser handed us.
+                </p>
+            </details>
+        {/if}
+
+        {#if diagnosticsText}
+            <details class="diagnostics">
+                <summary>What Darkly tried</summary>
+                <pre>{diagnosticsText}</pre>
+                <p class="hint">
+                    Include these lines if you file a bug
+                    <button
+                        type="button"
+                        class="copy-btn"
+                        onclick={() => copyFlag(diagnosticsText)}
+                    >
+                        {copied === diagnosticsText ? 'Copied' : 'Copy'}
+                    </button>
                 </p>
             </details>
         {/if}
@@ -307,6 +346,17 @@
         color: var(--text);
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         word-break: break-word;
+    }
+
+    pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 13px;
+        background: var(--bg-hover);
+        color: var(--text);
+        padding: 8px 12px;
+        border-radius: var(--radius-sm);
+        white-space: pre-wrap;
+        user-select: text;
     }
 
     .hint {

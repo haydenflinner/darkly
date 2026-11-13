@@ -25,7 +25,7 @@ nodes:
       - - 1.0
         - 0.38
   levels:
-    type: levels
+    type: remap
   multiply:
     type: multiply
   noise:

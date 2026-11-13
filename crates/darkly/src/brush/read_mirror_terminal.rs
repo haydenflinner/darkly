@@ -1,9 +1,8 @@
 //! Shared infrastructure for per-dab fragment-pass terminals that read
 //! the scratch read mirror, transform it, and write it back:
-//! [`smudge`](super::nodes::smudge), [`liquify`](super::nodes::liquify),
-//! and [`blur`](super::nodes::blur).
+//! [`liquify`](super::nodes::liquify) and [`blur`](super::nodes::blur).
 //!
-//! All three share one mechanical shape: each dab samples the scratch
+//! Both share one mechanical shape: each dab samples the scratch
 //! read mirror (bound at `@group(3)`), produces a new pixel, and writes
 //! it straight back under REPLACE blend. Dabs run one render pass each
 //! (`i..i+1`) with a `copy_texture_to_texture` between them, so every dab
@@ -63,15 +62,15 @@ const SCRATCH_MIRROR_BINDINGS: &str =
 /// variant WGSL; the free functions below own everything else.
 pub trait ReadMirrorTerminal {
     /// Registry id of this terminal's [`ReadMirrorPipeline`]:
-    /// `"smudge"` | `"liquify"` | `"blur"`.
+    /// `"liquify"` | `"blur"`.
     const PIPELINE_ID: &'static str;
     /// Human-readable label prefix for GPU debug labels.
     const LABEL: &'static str;
 
     /// Desired read half-extent (canvas px, per axis), or `None` to drop
     /// this dab before it reaches the queue. `None` is the terminal's
-    /// early-out: a stationary smudge, a sub-threshold liquify push, a
-    /// zero-strength blur; all collapse to an identity write, so the
+    /// early-out: a sub-threshold liquify push, a zero-strength blur;
+    /// both collapse to an identity write, so the
     /// per-dab pass and its mirror copy are pure waste.
     ///
     /// The framework clamps the returned half-extent up to at least the
@@ -181,7 +180,7 @@ impl PerBrushPipeline {
                     Some(ctx.uniform_bgl),
                     Some(&dabs_bgl),
                     Some(ctx.selection_bgl),
-                    Some(ctx.canvas_copy_bgl),
+                    Some(&ctx.canvas_copy.bgl),
                 ],
                 immediate_size: 0,
             });
@@ -276,8 +275,8 @@ impl PerBrushPipeline {
 // ── Pipeline registry entry ─────────────────────────────────────────────
 
 /// Per-brush pipeline cache shared by every read-mirror terminal. One
-/// instance is registered per terminal id (`"smudge"`, `"liquify"`,
-/// `"blur"`); they are the same Rust type, distinguished only by their
+/// instance is registered per terminal id (`"liquify"`, `"blur"`); they
+/// are the same Rust type, distinguished only by their
 /// registry key.
 pub struct ReadMirrorPipeline {
     cache: RefCell<HashMap<u64, PerBrushPipeline>>,
@@ -340,11 +339,19 @@ pub fn read_mirror_pipeline_reg(id: &'static str) -> BrushPipelineRegistration {
 /// (`pen_input.size`, via [`EvalContext::base_size`]) times this terminal's
 /// per-touch `size` modulation. Floored at 0.5 px so a dab always has
 /// positive area. Shared by every terminal: `paint` and `watercolor`
-/// delegate to it, and the read-mirror terminals (blur/smudge/liquify) call
+/// delegate to it, and the read-mirror terminals (blur/liquify) call
 /// it through this module.
+///
+/// This product is **the** reference-to-canvas boundary for the dab
+/// footprint. `SIZE_REFERENCE_PX` is a reference-pixel length, so
+/// [`EvalContext::dpi_factor`] converts it here, once, for every terminal;
+/// the lengths terminals derive from the result (blur's `blur_px`,
+/// liquify's read half-width) are canvas pixels and scale for free. The
+/// 0.5 floor sits outside the product because it is a raster constant: half
+/// a pixel is half a pixel at any DPI.
 pub fn effective_radius(ctx: &EvalContext) -> f32 {
     let modulation = ctx.input_f32("size").max(0.0);
-    (ctx.base_size() * modulation * SIZE_REFERENCE_PX * 0.5).max(0.5)
+    (ctx.base_size() * modulation * SIZE_REFERENCE_PX * ctx.dpi_factor() * 0.5).max(0.5)
 }
 
 /// Insert a per-dab value into `dab_batch.slot_outputs` under this node's
@@ -488,7 +495,7 @@ pub fn flush_dabs<T: ReadMirrorTerminal>(gpu: &mut BrushGpuContext) {
 
     // The pass renders into the scratch, so the pipeline's colour target
     // and its `@group(3)` layout both follow the scratch's format: colour
-    // for smudge/blur, a float displacement field for liquify.
+    // for blur, a float displacement field for liquify.
     let target_format = gpu
         .stroke
         .as_ref()
@@ -593,13 +600,14 @@ pub fn flush_dabs<T: ReadMirrorTerminal>(gpu: &mut BrushGpuContext) {
     });
 
     gpu.perf.record_dab_flush(total_dabs);
+    gpu.perf.record_dispatches(total_dabs);
 }
 
 /// Scratch → layer. `gpu.blend_mode` is ignored, since erase semantics
 /// aren't meaningful for these read-back transforms.
 ///
-/// Color terminals (smudge, blur) hold the finished image in the
-/// scratch, so commit is a direct blit. A warp terminal's scratch holds a
+/// A colour terminal (blur) holds the finished image in the scratch, so
+/// commit is a direct blit. A warp terminal's scratch holds a
 /// displacement field instead, so commit is the single resample that
 /// turns it into pixels: sampling the pre-stroke snapshot (or a
 /// clone-style `source_override`) through the field across the layer's
@@ -696,15 +704,13 @@ fn ensure_per_brush_pipeline(
     }
     // `@group(3)` binds the scratch's own read-mirror bind group, so the
     // pipeline layout has to be the one that scratch was built against.
-    let (canvas_copy_bgl, canvas_copy_sampler) =
-        gpu.pipelines.canvas_copy_layout_for(target_format);
     let ctx = BuildContext {
         device: gpu.device,
         queue: gpu.queue,
         uniform_bgl: gpu.pipelines.uniform_bind_group_layout(),
         selection_bgl: gpu.pipelines.selection_bind_group_layout(),
-        canvas_copy_bgl,
-        canvas_copy_sampler,
+        canvas_copy: gpu.pipelines.canvas_copy_layout_for(target_format),
+        canvas_copy_layouts: gpu.pipelines.canvas_copy_layouts(),
         min_uniform_align: gpu.device.limits().min_uniform_buffer_offset_alignment,
         texture_registry: gpu.pipelines.texture_registry(),
         baked_sources: gpu.pipelines.baked_sources(),
@@ -720,6 +726,14 @@ mod tests {
     use crate::nodegraph::{NodeId, PortDef};
 
     fn ctx_with<'a>(port_defs: &'a [PortDef<BrushWireType>], base_size: f32) -> EvalContext<'a> {
+        ctx_at_dpi(port_defs, base_size, crate::document::REFERENCE_DPI)
+    }
+
+    fn ctx_at_dpi<'a>(
+        port_defs: &'a [PortDef<BrushWireType>],
+        base_size: f32,
+        dpi: f32,
+    ) -> EvalContext<'a> {
         static TEST_NODE_ID: std::sync::OnceLock<NodeId> = std::sync::OnceLock::new();
         EvalContext {
             input_slots: &[],
@@ -730,6 +744,7 @@ mod tests {
             dab_index: 0,
             base_size,
             dabs_per_pass: 1.0,
+            dpi,
             node_id: TEST_NODE_ID.get_or_init(|| NodeId("test".into())),
         }
     }
@@ -762,5 +777,43 @@ mod tests {
         // Floor at 0.5 px so a zero-size dab still has positive area.
         let mod_zero = [PortDef::input("size", BrushWireType::Scalar).with_range(0.0, 1.0, 0.0)];
         assert_eq!(effective_radius(&ctx_with(&mod_zero, 0.0)), 0.5);
+    }
+
+    /// The dab footprint is the reference-to-canvas boundary: the same brush
+    /// on a document at twice the reference DPI must cover twice as many
+    /// canvas pixels, so it keeps its physical size. The 0.5 floor is a
+    /// raster constant and stays put, because half a pixel is half a pixel
+    /// at any DPI.
+    #[test]
+    fn effective_radius_applies_the_dpi_factor_before_the_floor() {
+        let ref_px = crate::brush::DAB_REFERENCE_SIZE as f32;
+        let ports = [PortDef::input("size", BrushWireType::Scalar).with_range(0.0, 1.0, 1.0)];
+        let reference = crate::document::REFERENCE_DPI;
+
+        for base in [0.1_f32, 0.3, 2.0] {
+            let at_reference = effective_radius(&ctx_at_dpi(&ports, base, reference));
+            let doubled = effective_radius(&ctx_at_dpi(&ports, base, reference * 2.0));
+            let quartered = effective_radius(&ctx_at_dpi(&ports, base, reference / 4.0));
+            assert!(
+                (at_reference - base * ref_px * 0.5).abs() < 1e-3,
+                "base {base}: the reference document must be unchanged, got {at_reference}"
+            );
+            assert!(
+                (doubled - 2.0 * at_reference).abs() < 1e-3,
+                "base {base}: twice the DPI must be twice the radius, got {doubled}"
+            );
+            assert!(
+                (quartered - at_reference / 4.0).abs() < 1e-3,
+                "base {base}: a quarter the DPI must be a quarter the radius, got {quartered}"
+            );
+        }
+
+        // The floor does not scale: it is a raster constant, not an artwork
+        // length.
+        let zero = [PortDef::input("size", BrushWireType::Scalar).with_range(0.0, 1.0, 0.0)];
+        assert_eq!(
+            effective_radius(&ctx_at_dpi(&zero, 0.0, reference * 12.0)),
+            0.5
+        );
     }
 }

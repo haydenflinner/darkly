@@ -212,8 +212,8 @@ impl FontRegistry {
     }
 
     /// Build a `vello::Scene` realizing every object on a vector layer. Text is
-    /// shaped here (parley) and emitted as glyph runs; paths are filled/stroked
-    /// directly. `layer_transform` is the layer-level gizmo affine, baked in so
+    /// shaped here (parley) and emitted as glyph runs; every other source is
+    /// filled/stroked through its [`ObjectSource::outline`]. `layer_transform` is the layer-level gizmo affine, baked in so
     /// the rasterization is crisp at canvas resolution (raster-first).
     /// Splines solve their knots into the cubic chain first — same draw.
     pub fn build_scene(&mut self, objects: &[VectorObject], layer_transform: Affine) -> Scene {
@@ -225,22 +225,14 @@ impl FontRegistry {
                 continue;
             }
             let transform = layer_transform * obj.transform;
-            match &obj.source {
-                ObjectSource::Path(path) => {
-                    fill_stroke(&mut scene, path, transform, obj);
-                }
-                ObjectSource::Spline(shape) => {
-                    if let Some(path) = shape.to_bezpath() {
-                        fill_stroke(&mut scene, &path, transform, obj);
-                    }
-                }
-                ObjectSource::Text(text) => {
-                    let fill = obj
-                        .fill
-                        .clone()
-                        .unwrap_or(Brush::Solid(Color::from_rgba8(0, 0, 0, 255)));
-                    self.draw_text(&mut scene, text, transform, &fill);
-                }
+            if let ObjectSource::Text(text) = &obj.source {
+                let fill = obj
+                    .fill
+                    .clone()
+                    .unwrap_or(Brush::Solid(Color::from_rgba8(0, 0, 0, 255)));
+                self.draw_text(&mut scene, text, transform, &fill);
+            } else if let Some(path) = obj.source.outline() {
+                fill_stroke(&mut scene, &path, transform, obj);
             }
         }
         scene

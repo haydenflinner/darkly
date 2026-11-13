@@ -189,7 +189,7 @@ fn round_trip_every_stabilizer() {
         // happy-path equivalent of what `start_save` → reload will run
         // through in Phase 3+.
         let _stab = registry
-            .create(&payload.type_id, &payload.params)
+            .create(&payload.type_id, &payload.params, 1.0)
             .unwrap_or_else(|| panic!("registry rejected its own '{type_id}'"));
     }
 }
@@ -423,6 +423,11 @@ use crate::layer::LayerId;
 /// the new variant.
 fn populate_kitchen_sink(engine: &mut DarklyEngine) {
     engine.set_document_name("Kitchen Sink".to_string());
+    // A non-default DPI, so the round trip proves the field is written and
+    // read rather than both ends landing on the same default. Dimensions
+    // unchanged, which makes this a DPI-only edit.
+    let (w, h) = (engine.doc.width, engine.doc.height);
+    engine.rescale_image(w, h, Some(150.0));
 
     // One raster layer per blend mode, named after the mode for
     // diagnosability if a single mode regresses.
@@ -549,6 +554,7 @@ fn drive_save_to_completion(engine: &mut DarklyEngine) -> SaveBundle {
 fn assert_documents_equivalent(a: &Document, b: &Document) {
     assert_eq!(a.width, b.width);
     assert_eq!(a.height, b.height);
+    assert_eq!(a.dpi, b.dpi);
     assert_eq!(a.name, b.name);
     assert_eq!(a.all_raster_layers().len(), b.all_raster_layers().len());
     assert_eq!(a.all_groups().len(), b.all_groups().len());
@@ -569,6 +575,18 @@ fn assert_documents_equivalent(a: &Document, b: &Document) {
         modes_a, modes_b,
         "blend mode coverage drifted on round-trip"
     );
+}
+
+/// A manifest written before `dpi` existed has no `dpi` key, and must load at
+/// the reference DPI rather than 0. Pre-release: a serde field default,
+/// not a migration.
+#[test]
+fn manifest_canvas_without_dpi_defaults_to_the_reference() {
+    let canvas: ManifestCanvas =
+        serde_json::from_str(r#"{"width":64,"height":48}"#).expect("legacy canvas block parses");
+    assert_eq!(canvas.width, 64);
+    assert_eq!(canvas.height, 48);
+    assert_eq!(canvas.dpi, crate::document::REFERENCE_DPI);
 }
 
 #[test]
@@ -790,10 +808,6 @@ fn sub_canvas_mask_survives_save_load_round_trip() {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
-        cr: 0.0,
-        cg: 0.0,
-        cb: 0.0,
-        ca: 1.0,
     });
     original.end_stroke();
     original.render(0.0);
@@ -1147,6 +1161,7 @@ fn synth_minimal_manifest() -> Manifest {
             height: 4,
             origin_x: 0,
             origin_y: 0,
+            dpi: crate::document::REFERENCE_DPI,
         },
         requires: ManifestRequires {
             layer_kind: vec!["group".to_string()],

@@ -3,31 +3,45 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The version grammar, shared with the library, which unit-tests it.
+#[path = "src/version.rs"]
+mod version;
+
 /// Bake Darkly's version into the crate as the `DARKLY_VERSION` compile-time
 /// env, read through `crate::VERSION`. The value is the latest git tag plus the
 /// commit height since it (`git describe --tags --long`, e.g. `v0.3.0-1-gf0c3ea9`),
-/// the same v* tags the deploy pipeline (darkly-deploy/) releases from.
+/// the same v* tags the deploy pipeline releases from.
 ///
-/// CANONICAL TWIN: frontend/vite.config.ts derives the frontend's version with
-/// the identical command and the identical `"0.0.0-0-gunknown"` fallback. The
-/// two build systems (Cargo vs. Vite) share no runtime, so this is a documented
-/// DRY exception: if you change the command or fallback here, change it there.
+/// Precedence: `version.txt` when `git archive` has filled it in, else live
+/// `git describe`, else `version::FALLBACK`. The file wins because it names
+/// the exact commit the tree came from, whereas `git describe` in an unpacked
+/// tarball or a crates.io build directory describes whatever repository
+/// happens to enclose it (a git-tracked home, a distro's packaging repository).
 ///
 /// Note: baking the commit SHA makes the crate's output non-deterministic across
-/// commits (as is already true for the frontend bundle). Best-effort and never
-/// panics: a tagless/git-less build just gets the fallback.
+/// commits. Best-effort and never panics: a tagless/git-less build just gets
+/// the fallback.
 fn emit_darkly_version() {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    println!("cargo:rerun-if-changed=version.txt");
+    let archive = fs::read_to_string(manifest_dir.join("version.txt"))
+        .ok()
+        .and_then(|text| version::from_archive(&text));
+
     // No `--always`: on a tagless/shallow checkout we want this to FAIL so the
     // fallback kicks in, rather than emit a bare SHA that isn't `TAG-N-gSHA`.
-    let version = Command::new("git")
-        .args(["describe", "--tags", "--long"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "0.0.0-0-gunknown".to_string());
+    let version = archive
+        .or_else(|| {
+            Command::new("git")
+                .args(["describe", "--tags", "--long"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| version::FALLBACK.to_string());
 
     println!("cargo:rustc-env=DARKLY_VERSION={version}");
 
@@ -37,7 +51,7 @@ fn emit_darkly_version() {
     // hints only reduce dev staleness; release correctness comes from the
     // deploy pipeline's fresh clone-at-tag, not from here. Tag-at-HEAD and
     // `git gc` repacks are imperfectly covered by design.
-    let git_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../../.git");
+    let git_dir = manifest_dir.join("../../.git");
     let mut candidates = vec![
         git_dir.join("HEAD"),
         git_dir.join("packed-refs"),
@@ -61,7 +75,7 @@ fn main() {
 
     let src = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("src");
 
-    generate_grouped_registry(
+    generate_registry(
         &src.join("engine/protocol/handlers"),
         "crate::engine::protocol::RequestRegistration",
     );
@@ -103,6 +117,13 @@ fn main() {
     generate_catalog_registry(
         &src.join("brush/nodes"),
         "crate::brush::BrushNodeRegistration",
+        &src,
+        &mut catalog_sources,
+    );
+
+    generate_catalog_registry(
+        &src.join("shape/families"),
+        "crate::shape::ShapeFamilyRegistration",
         &src,
         &mut catalog_sources,
     );
@@ -304,15 +325,18 @@ fn generate_catalog_sources(mut sources: Vec<(String, String)>, src: &Path) {
 
 /// Scan a directory for .rs module files (excluding mod.rs) and generate
 /// a mod.rs that re-exports all modules and provides a `registrations()`
-/// function collecting each module's `register()` return value.
+/// function collecting every module's registrations.
 ///
-/// Convention: each module must export
-///   `pub fn register() -> {registration_type}`
+/// Convention: each module exports either
+///   `pub fn register() -> {registration_type}` (one variant per file), or
+///   `pub fn registrations() -> Vec<{registration_type}>` (a group, e.g. the
+///   request kinds of one protocol domain, or one tool per shape family).
 ///
 /// This is the Rust equivalent of Python's __init__.py auto-discovery:
 /// drop a new .rs file in the directory, it gets picked up automatically.
 fn generate_registry(dir: &Path, registration_type: &str) {
-    let mut modules = Vec::new();
+    // (module stem, contributes a group)
+    let mut modules: Vec<(String, bool)> = Vec::new();
 
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -320,7 +344,8 @@ fn generate_registry(dir: &Path, registration_type: &str) {
             if path.extension().is_some_and(|e| e == "rs") {
                 let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
                 if stem != "mod" {
-                    modules.push(stem);
+                    let grouped = defines_top_level_fn(&path, "registrations");
+                    modules.push((stem, grouped));
                 }
             }
         }
@@ -336,24 +361,31 @@ fn generate_registry(dir: &Path, registration_type: &str) {
     code.push_str("// @generated by build.rs: do not edit manually.\n");
     code.push_str("// To add a new module, create a .rs file in this directory\n");
     code.push_str(&format!(
-        "// that exports `pub fn register() -> {registration_type}`.\n\n"
+        "// that exports `pub fn register() -> {registration_type}`,\n\
+         // or `pub fn registrations() -> Vec<{type_name}>` for a group.\n\n"
     ));
 
-    for m in &modules {
+    for (m, _) in &modules {
         code.push_str(&format!("pub mod {m};\n"));
     }
 
     code.push_str(&format!("\nuse {registration_type};\n\n"));
     // Skip rustfmt on the generated body: layout varies across rustfmt
-    // versions (single-element `vec![]` collapses on newer versions),
-    // which would otherwise make CI's fmt check depend on the toolchain.
+    // versions, which would otherwise make CI's fmt check depend on the
+    // toolchain.
     code.push_str("#[rustfmt::skip]\n");
+    // One body form for single and grouped modules alike.
+    code.push_str("#[allow(clippy::vec_init_then_push)]\n");
     code.push_str(&format!("pub fn registrations() -> Vec<{type_name}> {{\n"));
-    code.push_str("    vec![\n");
-    for m in &modules {
-        code.push_str(&format!("        {m}::register(),\n"));
+    code.push_str("    let mut all = Vec::new();\n");
+    for (m, grouped) in &modules {
+        if *grouped {
+            code.push_str(&format!("    all.extend({m}::registrations());\n"));
+        } else {
+            code.push_str(&format!("    all.push({m}::register());\n"));
+        }
     }
-    code.push_str("    ]\n");
+    code.push_str("    all\n");
     code.push_str("}\n");
 
     let mod_path = dir.join("mod.rs");
@@ -363,6 +395,21 @@ fn generate_registry(dir: &Path, registration_type: &str) {
     }
 
     println!("cargo:rerun-if-changed={}", dir.display());
+}
+
+/// Whether the Rust file at `path` defines a top-level `fn name`. Parsed
+/// rather than string-matched so a test module or doc comment mentioning the
+/// name does not count.
+fn defines_top_level_fn(path: &Path, name: &str) -> bool {
+    let Ok(source) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(file) = syn::parse_file(&source) else {
+        return false;
+    };
+    file.items
+        .iter()
+        .any(|item| matches!(item, syn::Item::Fn(f) if f.sig.ident == name))
 }
 
 /// Scan every `.rs` file under `engine/` for methods tagged `#[handler]` (the
@@ -451,62 +498,6 @@ fn collect_from_items(items: &[syn::Item], out: &mut Vec<String>) {
             _ => {}
         }
     }
-}
-
-/// Like [`generate_registry`], but each module exports
-///   `pub fn registrations() -> Vec<{registration_type}>`
-/// (a *group* of registrations) rather than a single `register()`. The
-/// generated `mod.rs` flattens every module's group into one aggregate
-/// `registrations()`. Used by the request protocol, where related request
-/// kinds are grouped per domain file (e.g. `layers.rs`, `selection.rs`)
-/// instead of one file per kind.
-fn generate_grouped_registry(dir: &Path, registration_type: &str) {
-    let mut modules = Vec::new();
-
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "rs") {
-                let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
-                if stem != "mod" {
-                    modules.push(stem);
-                }
-            }
-        }
-    }
-
-    modules.sort();
-
-    let type_name = registration_type.rsplit("::").next().unwrap();
-
-    let mut code = String::new();
-    code.push_str("// @generated by build.rs: do not edit manually.\n");
-    code.push_str("// To add request kinds, create or edit a domain .rs file in this\n");
-    code.push_str(&format!(
-        "// directory that exports `pub fn registrations() -> Vec<{registration_type}>`.\n\n"
-    ));
-
-    for m in &modules {
-        code.push_str(&format!("pub mod {m};\n"));
-    }
-
-    code.push_str(&format!("\nuse {registration_type};\n\n"));
-    code.push_str("#[rustfmt::skip]\n");
-    code.push_str(&format!("pub fn registrations() -> Vec<{type_name}> {{\n"));
-    code.push_str("    let mut all = Vec::new();\n");
-    for m in &modules {
-        code.push_str(&format!("    all.extend({m}::registrations());\n"));
-    }
-    code.push_str("    all\n");
-    code.push_str("}\n");
-
-    let mod_path = dir.join("mod.rs");
-    let existing = fs::read_to_string(&mod_path).unwrap_or_default();
-    if existing != code {
-        fs::write(&mod_path, code).unwrap();
-    }
-
-    println!("cargo:rerun-if-changed={}", dir.display());
 }
 
 /// The Rust constant name holding one YAML file's source: the file stem,

@@ -26,6 +26,7 @@ const H: u32 = 2048;
 const THUMB: u32 = 36;
 
 fn paint_one_dab(engine: &mut DarklyEngine, layer_id: darkly::layer::LayerId) {
+    engine.set_foreground_color([1.0, 0.0, 0.0, 1.0]);
     engine.begin_stroke(layer_id).unwrap();
     engine.stroke_to(StrokeOp::BrushStroke {
         x: 512.0,
@@ -36,10 +37,6 @@ fn paint_one_dab(engine: &mut DarklyEngine, layer_id: darkly::layer::LayerId) {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
-        cr: 1.0,
-        cg: 0.0,
-        cb: 0.0,
-        ca: 1.0,
     });
     engine.end_stroke();
 }

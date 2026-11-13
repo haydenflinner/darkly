@@ -70,6 +70,8 @@ export type ApplyFilterReq = { node_id: number, filter_type: string, params: Jso
 
 export type ApplyMaskReq = { id: number, };
 
+export type BeginShapeReq = { family: string, params: JsonValue, x: number, y: number, width: number, height: number, fill: [number, number, number, number] | null, stroke: StrokeWire | null, anchor: number | null, };
+
 export type BeginStrokeReq = { id: number, };
 
 export type BeginTransformReq = { id: number, };
@@ -97,9 +99,10 @@ export type BrushGraphCapabilities = {
 supports_erase: boolean, 
 /**
  * Iconify icon to show in the dab slot in place of a baked thumbnail,
- * contributed by the first node whose registration declares
- * `preview_staging`: content-dependent nodes (clone, blur, smudge,
- * liquify) whose still-dab bake renders blank.
+ * contributed by the first node that stages its preview (its
+ * evaluator's [`eval::BrushNodeEvaluator::preview_staging`]):
+ * content-dependent nodes (clone, blur, liquify, the live canvas
+ * sampler) whose still-dab bake renders blank.
  */
 preview_fallback_icon: string | null, 
 /**
@@ -260,6 +263,16 @@ export type DuplicateNodeReq = { source_id: number, };
 
 export type DuplicateNodesReq = { ids: Array<number>, };
 
+export type EditSessionKind = { 
+/**
+ * Stable id the frontend keys per-kind controls by.
+ */
+id: string, displayName: string, 
+/**
+ * Iconify id.
+ */
+icon: string, };
+
 export type EngineState = { 
 /**
  * Compositor master tick (post-increment for this frame). Drives JS-side
@@ -279,6 +292,12 @@ dirty: boolean,
  * Document has an active selection. Backs selection-gated menu items.
  */
 hasSelection: boolean, 
+/**
+ * The kind of the edit session open for the artist to apply or
+ * discard (stroke edit, a transform, pasted content), if any. Backs the
+ * canvas's session frame and the stroke-edit toggle's active state.
+ */
+editSession: EditSessionKind | null, 
 /**
  * The canvas window rect in plane coordinates (`Document::canvas_rect`):
  * where the window sits and how big it is. Rides the frame snapshot
@@ -565,6 +584,16 @@ layers: Array<LayerInfo>, };
 
 export type LibrarySnapshot = { brushes: Array<BrushInfo>, packs: Array<BrushPackInfo>, };
 
+export type LoadedBrush = { id: string, 
+/**
+ * Display name, read from the library when asked.
+ */
+name: string, 
+/**
+ * Whether the live graph differs from the brush's saved graph.
+ */
+modified: boolean, };
+
 export type MaskToSelectionReq = { id: number, };
 
 export type MergeDownReq = { source_id: number, };
@@ -634,7 +663,7 @@ is_terminal: boolean,
 /**
  * Whether this terminal honours erase mode (paint vs. erase).
  * Defaults `true`; smear/displace terminals that sample existing
- * pixels (smudge, watercolor, liquify) override to `false` so the
+ * pixels (blur, watercolor, liquify) override to `false` so the
  * brush-tool options bar hides the erase toggle.
  */
 supports_erase: boolean, 
@@ -648,6 +677,8 @@ supports_erase: boolean,
 preview_staging: PreviewStaging | null, };
 
 export type NodeThumbnailReq = { node_id: number, width: number, height: number, };
+
+export type ObjectId = number;
 
 export type ObjectRefReq = { id: number, object: number, };
 
@@ -711,7 +742,12 @@ widget: string, unit: UnitType, min: number | null, max: number | null, default:
  * Enum: `["Label1", "Label2", ...]`.
  * Icon: `[["fa6-solid:icon-name", "Label"], ...]`.
  */
-options: JsonValue | null, display: ParamDisplay, };
+options: JsonValue | null, display: ParamDisplay, 
+/**
+ * `[name, allowed]`: show this parameter only while the named sibling's
+ * integer value is in `allowed`. See `ParamDef::visible_when`.
+ */
+visible_when: [string, Array<number>] | null, };
 
 export type ParamValue = boolean | number | number | string | Array<[number, number]> | [number, number, number, number, number] | [number, number, number] | [number, number] | Array<{ [key in string]: ParamValue }>;
 
@@ -959,7 +995,7 @@ export type RemoveLayersReq = { ids: Array<number>, };
 
 export type RemoveMaskReq = { id: number, };
 
-export type RescaleImageReq = { new_width: number, new_height: number, };
+export type RescaleImageReq = { new_width: number, new_height: number, dpi: number | null, };
 
 export type ResizeCanvasRectReq = { origin_x: number, origin_y: number, w: number, h: number, };
 
@@ -991,6 +1027,8 @@ export type SetDocumentNameReq = { name: string, };
 
 export type SetFilterParamsReq = { id: number, params: JsonValue, };
 
+export type SetForegroundColorReq = { rgba: [number, number, number, number], };
+
 export type SetGroupCollapsedReq = { id: number, collapsed: boolean, };
 
 export type SetGroupPassthroughReq = { id: number, passthrough: boolean, };
@@ -1021,6 +1059,10 @@ export type SetPreviewThemeReq = { fg: [number, number, number, number], bg: [nu
 
 export type SetRecordingParamsReq = { enabled: boolean, minIntervalSecs: number, width: number, height: number, baseWidth: number, baseHeight: number, };
 
+export type SetShapeParamsReq = { id: number, object: ObjectId, params: JsonValue, };
+
+export type SetShapeStyleReq = { id: number, object: ObjectId, fill: [number, number, number, number] | null, stroke: StrokeWire | null, };
+
 export type SetSplineKnotsReq = { id: number, object: number, knots: Array<[number, number]>, closed: boolean, ends?: [[number, number], [number, number]], };
 
 export type SetTextBoxReq = { id: number, object: number, 
@@ -1044,11 +1086,17 @@ variations?: { [key in string]: number }, features?: { [key in string]: number }
 
 export type SetVectorObjectsReq = { id: number, objects: Array<VectorObjectSpec>, };
 
-export type SetViewTransformReq = { pan_x: number, pan_y: number, zoom: number, rotation: number, mirror_h: boolean, screen_w: number, screen_h: number, };
+export type SetViewTransformReq = { pan_x: number, pan_y: number, zoom: number, rotation: number, mirror_h: boolean, screen_w: number, screen_h: number, dpr: number, };
 
 export type SetViewportBgReq = { bg: [number, number, number, number], };
 
 export type SetVoidParamsReq = { id: number, params: JsonValue, };
+
+export type ShapeObjectInfo = { object: ObjectId, family: string, params: Array<ParamInfo>, width: number, height: number, fill: [number, number, number, number] | null, stroke: StrokeWire | null, };
+
+export type ShapeObjectRef = { id: number, object: ObjectId, };
+
+export type ShapeObjectsReq = { id: number, };
 
 export type ShrinkSelectionReq = { radius: number, };
 
@@ -1060,14 +1108,11 @@ export type SplineSolveReq = { knots: Array<[number, number]>, closed: boolean, 
 
 export type StartSaveDocumentReq = { snapshot: boolean, };
 
-export type StrokeOp = { "op": "flood_fill", x: number, y: number, r: number, g: number, b: number, a: number, tolerance: number, } | { "op": "linear_gradient", x0: number, y0: number, x1: number, y1: number, r0: number, g0: number, b0: number, a0: number, r1: number, g1: number, b1: number, a1: number, } | { "op": "brush_stroke", x: number, y: number, pressure: number, x_tilt: number, y_tilt: number, rotation: number, tangential_pressure: number, time_ms: number, 
-/**
- * Foreground color as raw sRGB RGBA floats (0-1), as picked; the
- * compositor is display-referred, so no gamma conversion is applied.
- */
-cr: number, cg: number, cb: number, ca: number, };
+export type StrokeOp = { "op": "flood_fill", x: number, y: number, r: number, g: number, b: number, a: number, tolerance: number, } | { "op": "linear_gradient", x0: number, y0: number, x1: number, y1: number, r0: number, g0: number, b0: number, a0: number, r1: number, g1: number, b1: number, a1: number, } | { "op": "brush_stroke", x: number, y: number, pressure: number, x_tilt: number, y_tilt: number, rotation: number, tangential_pressure: number, time_ms: number, };
 
 export type StrokeToReq = { op: StrokeOp, };
+
+export type StrokeWire = { width: number, color: [number, number, number, number], };
 
 export type SuppressHistoryReq = { on: boolean, };
 
@@ -1078,6 +1123,8 @@ export type TransformCapabilityError = { endpoint: number, operation: PixelTrans
 export type UnitType = "Normalized" | "Percent" | "Degrees" | "Raw" | "Pixels";
 
 export type UpdateFloatingMatrixReq = { transform: Transform, };
+
+export type UpdateShapeReq = { x: number, y: number, width: number, height: number, };
 
 export type UpdateVectorObjectTransformReq = { id: number, object: number, payload: Array<number>, };
 
@@ -1132,8 +1179,10 @@ export type RequestKind =
     | 'add_void'
     | 'alpha_to_selection'
     | 'antialias_selection'
+    | 'apply_edit_session'
     | 'apply_filter'
     | 'apply_mask'
+    | 'begin_shape'
     | 'begin_stroke'
     | 'begin_transform'
     | 'border_selection'
@@ -1165,14 +1214,15 @@ export type RequestKind =
     | 'brush_graph_validate'
     | 'brush_list'
     | 'brush_load'
+    | 'brush_loaded'
     | 'brush_node_preview'
     | 'brush_node_types'
     | 'brush_rename'
+    | 'brush_revert'
     | 'brush_save'
     | 'brush_set_exposed_port'
     | 'brush_stroke_preview'
     | 'brush_thumbnail'
-    | 'brush_topology_version'
     | 'brush_upload_image'
     | 'can_convert_floating_to_smart_object'
     | 'can_convert_layer_to_smart_object'
@@ -1181,6 +1231,7 @@ export type RequestKind =
     | 'can_merge_down'
     | 'cancel_filter_preview'
     | 'cancel_floating'
+    | 'cancel_shape'
     | 'canvas_dimensions'
     | 'canvas_rect'
     | 'catalogs'
@@ -1194,12 +1245,15 @@ export type RequestKind =
     | 'clone_source_anchored'
     | 'commit_filter_preview'
     | 'commit_floating'
+    | 'commit_shape'
     | 'convert_floating_to_smart_object'
     | 'convert_layer_to_smart_object'
     | 'copy'
     | 'copy_layer_rich'
     | 'crop_to_selection'
     | 'cut'
+    | 'discard_edit_session'
+    | 'document_dpi'
     | 'document_name'
     | 'duplicate_node'
     | 'duplicate_nodes'
@@ -1288,6 +1342,7 @@ export type RequestKind =
     | 'set_clone_source'
     | 'set_document_name'
     | 'set_filter_params'
+    | 'set_foreground_color'
     | 'set_group_collapsed'
     | 'set_group_passthrough'
     | 'set_guide_mode'
@@ -1303,6 +1358,8 @@ export type RequestKind =
     | 'set_pixel_filter'
     | 'set_preview_theme'
     | 'set_recording_params'
+    | 'set_shape_params'
+    | 'set_shape_style'
     | 'set_spline_knots'
     | 'set_text_box'
     | 'set_text_content'
@@ -1311,6 +1368,7 @@ export type RequestKind =
     | 'set_view_transform'
     | 'set_viewport_bg'
     | 'set_void_params'
+    | 'shape_objects'
     | 'shrink_selection'
     | 'smooth_selection'
     | 'spline_objects'
@@ -1318,12 +1376,15 @@ export type RequestKind =
     | 'start_export'
     | 'start_preview'
     | 'start_save_document'
+    | 'stroke_edit_begin'
+    | 'stroke_edit_end'
     | 'stroke_to'
     | 'suppress_history'
     | 'take_transform_setup_error'
     | 'text_objects'
     | 'undo'
     | 'update_floating_matrix'
+    | 'update_shape'
     | 'update_vector_object_transform'
     | 'update_void_transform'
     | 'vector_object_info'
@@ -1344,8 +1405,10 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'add_void',
     'alpha_to_selection',
     'antialias_selection',
+    'apply_edit_session',
     'apply_filter',
     'apply_mask',
+    'begin_shape',
     'begin_stroke',
     'begin_transform',
     'border_selection',
@@ -1377,14 +1440,15 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'brush_graph_validate',
     'brush_list',
     'brush_load',
+    'brush_loaded',
     'brush_node_preview',
     'brush_node_types',
     'brush_rename',
+    'brush_revert',
     'brush_save',
     'brush_set_exposed_port',
     'brush_stroke_preview',
     'brush_thumbnail',
-    'brush_topology_version',
     'brush_upload_image',
     'can_convert_floating_to_smart_object',
     'can_convert_layer_to_smart_object',
@@ -1393,6 +1457,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'can_merge_down',
     'cancel_filter_preview',
     'cancel_floating',
+    'cancel_shape',
     'canvas_dimensions',
     'canvas_rect',
     'catalogs',
@@ -1406,12 +1471,15 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'clone_source_anchored',
     'commit_filter_preview',
     'commit_floating',
+    'commit_shape',
     'convert_floating_to_smart_object',
     'convert_layer_to_smart_object',
     'copy',
     'copy_layer_rich',
     'crop_to_selection',
     'cut',
+    'discard_edit_session',
+    'document_dpi',
     'document_name',
     'duplicate_node',
     'duplicate_nodes',
@@ -1500,6 +1568,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'set_clone_source',
     'set_document_name',
     'set_filter_params',
+    'set_foreground_color',
     'set_group_collapsed',
     'set_group_passthrough',
     'set_guide_mode',
@@ -1515,6 +1584,8 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'set_pixel_filter',
     'set_preview_theme',
     'set_recording_params',
+    'set_shape_params',
+    'set_shape_style',
     'set_spline_knots',
     'set_text_box',
     'set_text_content',
@@ -1523,6 +1594,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'set_view_transform',
     'set_viewport_bg',
     'set_void_params',
+    'shape_objects',
     'shrink_selection',
     'smooth_selection',
     'spline_objects',
@@ -1530,12 +1602,15 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'start_export',
     'start_preview',
     'start_save_document',
+    'stroke_edit_begin',
+    'stroke_edit_end',
     'stroke_to',
     'suppress_history',
     'take_transform_setup_error',
     'text_objects',
     'undo',
     'update_floating_matrix',
+    'update_shape',
     'update_vector_object_transform',
     'update_void_transform',
     'vector_object_info',
@@ -1564,8 +1639,10 @@ export interface EngineApi {
     addVoid(req: AddVoidReq): Promise<number | null>;
     alphaToSelection(req: AlphaToSelectionReq): void;
     antialiasSelection(): void;
+    applyEditSession(): Promise<boolean>;
     applyFilter(req: ApplyFilterReq): Promise<boolean>;
     applyMask(req: ApplyMaskReq): void;
+    beginShape(req: BeginShapeReq): void;
     beginStroke(req: BeginStrokeReq): Promise<null>;
     beginTransform(req: BeginTransformReq): Promise<boolean>;
     borderSelection(req: BorderSelectionReq): void;
@@ -1597,14 +1674,15 @@ export interface EngineApi {
     brushGraphValidate(req: BrushGraphJsonReq): Promise<null | { error: string }>;
     brushList(): Promise<Array<BrushInfo>>;
     brushLoad(req: BrushLoadReq): Promise<null>;
+    brushLoaded(): Promise<LoadedBrush | null>;
     brushNodePreview(req: BrushNodePreviewReq): Promise<{ bytes: Uint8Array }>;
     brushNodeTypes(): Promise<Array<NodeRegistration>>;
     brushRename(req: BrushRenameReq): Promise<null>;
+    brushRevert(): Promise<null>;
     brushSave(req: BrushSaveReq): Promise<null>;
     brushSetExposedPort(req: BrushSetExposedPortReq): Promise<{ graph: JsonValue } | { error: string }>;
     brushStrokePreview(): Promise<{ bytes: Uint8Array }>;
     brushThumbnail(req: BrushThumbnailReq): Promise<{ bytes: Uint8Array }>;
-    brushTopologyVersion(): Promise<{ value: number }>;
     brushUploadImage(req: BrushUploadImageReq, bytes: Uint8Array): Promise<void>;
     canConvertFloatingToSmartObject(): Promise<boolean>;
     canConvertLayerToSmartObject(req: CanConvertLayerToSmartObjectReq): Promise<boolean>;
@@ -1613,6 +1691,7 @@ export interface EngineApi {
     canMergeDown(req: CanMergeDownReq): Promise<boolean>;
     cancelFilterPreview(): void;
     cancelFloating(): void;
+    cancelShape(): void;
     canvasDimensions(): Promise<CanvasDimensionsResp>;
     canvasRect(): Promise<CanvasRectResp>;
     catalogs(): Promise<Array<Catalog>>;
@@ -1626,12 +1705,15 @@ export interface EngineApi {
     cloneSourceAnchored(): Promise<boolean>;
     commitFilterPreview(req: CommitFilterPreviewReq): Promise<boolean>;
     commitFloating(): void;
+    commitShape(): Promise<ShapeObjectRef | null>;
     convertFloatingToSmartObject(): Promise<number>;
     convertLayerToSmartObject(req: ConvertLayerToSmartObjectReq): Promise<number>;
     copy(req: CopyReq): Promise<ClipboardExport | null>;
     copyLayerRich(req: CopyLayerRichReq): void;
     cropToSelection(): void;
     cut(req: CutReq): Promise<ClipboardExport | null>;
+    discardEditSession(): Promise<boolean>;
+    documentDpi(): Promise<number>;
     documentName(): Promise<string>;
     duplicateNode(req: DuplicateNodeReq): Promise<number | null>;
     duplicateNodes(req: DuplicateNodesReq): Promise<Array<number>>;
@@ -1720,6 +1802,7 @@ export interface EngineApi {
     setCloneSource(req: SetCloneSourceReq): void;
     setDocumentName(req: SetDocumentNameReq): void;
     setFilterParams(req: SetFilterParamsReq): void;
+    setForegroundColor(req: SetForegroundColorReq): void;
     setGroupCollapsed(req: SetGroupCollapsedReq): void;
     setGroupPassthrough(req: SetGroupPassthroughReq): void;
     setGuideMode(req: SetGuideModeReq): void;
@@ -1735,6 +1818,8 @@ export interface EngineApi {
     setPixelFilter(req: SetPixelFilterReq): void;
     setPreviewTheme(req: SetPreviewThemeReq): void;
     setRecordingParams(req: SetRecordingParamsReq): void;
+    setShapeParams(req: SetShapeParamsReq): void;
+    setShapeStyle(req: SetShapeStyleReq): void;
     setSplineKnots(req: SetSplineKnotsReq): void;
     setTextBox(req: SetTextBoxReq): void;
     setTextContent(req: SetTextContentReq): void;
@@ -1743,6 +1828,7 @@ export interface EngineApi {
     setViewTransform(req: SetViewTransformReq): void;
     setViewportBg(req: SetViewportBgReq): void;
     setVoidParams(req: SetVoidParamsReq): void;
+    shapeObjects(req: ShapeObjectsReq): Promise<Array<ShapeObjectInfo>>;
     shrinkSelection(req: ShrinkSelectionReq): void;
     smoothSelection(req: SmoothSelectionReq): void;
     splineObjects(req: SplineLayerReq): Promise<{ objects: Array<{ object: number, knots: [number, number][], closed: boolean, ends: [[number, number], [number, number]] | null, guide: boolean, matrix: number[] }> }>;
@@ -1750,12 +1836,15 @@ export interface EngineApi {
     startExport(): void;
     startPreview(req: PreviewReq): void;
     startSaveDocument(req: StartSaveDocumentReq): Promise<void>;
+    strokeEditBegin(): Promise<boolean>;
+    strokeEditEnd(): void;
     strokeTo(req: StrokeToReq): void;
     suppressHistory(req: SuppressHistoryReq): void;
     takeTransformSetupError(): Promise<TransformCapabilityError | null>;
     textObjects(req: LayerIdReq): Promise<{ objects: Array<{ object: number, content: string, font_family: string, size: number, variations: Record<string, number>, features: Record<string, number>, letter_spacing: number, word_spacing: number, line_height: number, italic: boolean, align: string, color: [number, number, number, number], box: [number, number] | null }> }>;
     undo(): void;
     updateFloatingMatrix(req: UpdateFloatingMatrixReq): void;
+    updateShape(req: UpdateShapeReq): void;
     updateVectorObjectTransform(req: UpdateVectorObjectTransformReq): void;
     updateVoidTransform(req: UpdateVoidTransformReq): void;
     vectorObjectInfo(req: ObjectRefReq): Promise<{ ox: number, oy: number, w: number, h: number, mode: number, matrix: number[] } | null>;
@@ -1778,8 +1867,10 @@ export function makeApi(t: Transport): EngineApi {
         addVoid: (req) => t.request('add_void', req),
         alphaToSelection: (req) => t.postFF('alpha_to_selection', req),
         antialiasSelection: () => t.postFF('antialias_selection'),
+        applyEditSession: () => t.request('apply_edit_session'),
         applyFilter: (req) => t.request('apply_filter', req),
         applyMask: (req) => t.postFF('apply_mask', req),
+        beginShape: (req) => t.postFF('begin_shape', req),
         beginStroke: (req) => t.request('begin_stroke', req),
         beginTransform: (req) => t.request('begin_transform', req),
         borderSelection: (req) => t.postFF('border_selection', req),
@@ -1811,14 +1902,15 @@ export function makeApi(t: Transport): EngineApi {
         brushGraphValidate: (req) => t.request('brush_graph_validate', req),
         brushList: () => t.request('brush_list'),
         brushLoad: (req) => t.request('brush_load', req),
+        brushLoaded: () => t.request('brush_loaded'),
         brushNodePreview: (req) => t.request('brush_node_preview', req),
         brushNodeTypes: () => t.request('brush_node_types'),
         brushRename: (req) => t.request('brush_rename', req),
+        brushRevert: () => t.request('brush_revert'),
         brushSave: (req) => t.request('brush_save', req),
         brushSetExposedPort: (req) => t.request('brush_set_exposed_port', req),
         brushStrokePreview: () => t.request('brush_stroke_preview'),
         brushThumbnail: (req) => t.request('brush_thumbnail', req),
-        brushTopologyVersion: () => t.request('brush_topology_version'),
         brushUploadImage: (req, bytes) => t.request('brush_upload_image', req, bytes),
         canConvertFloatingToSmartObject: () => t.request('can_convert_floating_to_smart_object'),
         canConvertLayerToSmartObject: (req) => t.request('can_convert_layer_to_smart_object', req),
@@ -1827,6 +1919,7 @@ export function makeApi(t: Transport): EngineApi {
         canMergeDown: (req) => t.request('can_merge_down', req),
         cancelFilterPreview: () => t.postFF('cancel_filter_preview'),
         cancelFloating: () => t.postFF('cancel_floating'),
+        cancelShape: () => t.postFF('cancel_shape'),
         canvasDimensions: () => t.request('canvas_dimensions'),
         canvasRect: () => t.request('canvas_rect'),
         catalogs: () => t.request('catalogs'),
@@ -1840,12 +1933,15 @@ export function makeApi(t: Transport): EngineApi {
         cloneSourceAnchored: () => t.request('clone_source_anchored'),
         commitFilterPreview: (req) => t.request('commit_filter_preview', req),
         commitFloating: () => t.postFF('commit_floating'),
+        commitShape: () => t.request('commit_shape'),
         convertFloatingToSmartObject: () => t.request('convert_floating_to_smart_object'),
         convertLayerToSmartObject: (req) => t.request('convert_layer_to_smart_object', req),
         copy: (req) => t.request('copy', req),
         copyLayerRich: (req) => t.postFF('copy_layer_rich', req),
         cropToSelection: () => t.postFF('crop_to_selection'),
         cut: (req) => t.request('cut', req),
+        discardEditSession: () => t.request('discard_edit_session'),
+        documentDpi: () => t.request('document_dpi'),
         documentName: () => t.request('document_name'),
         duplicateNode: (req) => t.request('duplicate_node', req),
         duplicateNodes: (req) => t.request('duplicate_nodes', req),
@@ -1934,6 +2030,7 @@ export function makeApi(t: Transport): EngineApi {
         setCloneSource: (req) => t.postFF('set_clone_source', req),
         setDocumentName: (req) => t.postFF('set_document_name', req),
         setFilterParams: (req) => t.postFF('set_filter_params', req),
+        setForegroundColor: (req) => t.postFF('set_foreground_color', req),
         setGroupCollapsed: (req) => t.postFF('set_group_collapsed', req),
         setGroupPassthrough: (req) => t.postFF('set_group_passthrough', req),
         setGuideMode: (req) => t.postFF('set_guide_mode', req),
@@ -1949,6 +2046,8 @@ export function makeApi(t: Transport): EngineApi {
         setPixelFilter: (req) => t.postFF('set_pixel_filter', req),
         setPreviewTheme: (req) => t.postFF('set_preview_theme', req),
         setRecordingParams: (req) => t.postFF('set_recording_params', req),
+        setShapeParams: (req) => t.postFF('set_shape_params', req),
+        setShapeStyle: (req) => t.postFF('set_shape_style', req),
         setSplineKnots: (req) => t.postFF('set_spline_knots', req),
         setTextBox: (req) => t.postFF('set_text_box', req),
         setTextContent: (req) => t.postFF('set_text_content', req),
@@ -1957,6 +2056,7 @@ export function makeApi(t: Transport): EngineApi {
         setViewTransform: (req) => t.postFF('set_view_transform', req),
         setViewportBg: (req) => t.postFF('set_viewport_bg', req),
         setVoidParams: (req) => t.postFF('set_void_params', req),
+        shapeObjects: (req) => t.request('shape_objects', req),
         shrinkSelection: (req) => t.postFF('shrink_selection', req),
         smoothSelection: (req) => t.postFF('smooth_selection', req),
         splineObjects: (req) => t.request('spline_objects', req),
@@ -1964,12 +2064,15 @@ export function makeApi(t: Transport): EngineApi {
         startExport: () => t.postFF('start_export'),
         startPreview: (req) => t.postFF('start_preview', req),
         startSaveDocument: (req) => t.request('start_save_document', req),
+        strokeEditBegin: () => t.request('stroke_edit_begin'),
+        strokeEditEnd: () => t.postFF('stroke_edit_end'),
         strokeTo: (req) => t.postFF('stroke_to', req),
         suppressHistory: (req) => t.postFF('suppress_history', req),
         takeTransformSetupError: () => t.request('take_transform_setup_error'),
         textObjects: (req) => t.request('text_objects', req),
         undo: () => t.postFF('undo'),
         updateFloatingMatrix: (req) => t.postFF('update_floating_matrix', req),
+        updateShape: (req) => t.postFF('update_shape', req),
         updateVectorObjectTransform: (req) => t.postFF('update_vector_object_transform', req),
         updateVoidTransform: (req) => t.postFF('update_void_transform', req),
         vectorObjectInfo: (req) => t.request('vector_object_info', req),

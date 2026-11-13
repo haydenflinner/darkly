@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte';
+    import { markAppReady } from '../state/appReady.svelte';
     import { initEditor, createInstance, ensureProcessInit, seedFreshDocument } from '../editor';
     import { config } from '../config/store.svelte';
     import { app, type DarklyInstance } from '../state/app.svelte';
@@ -15,7 +16,10 @@
     import { THUMB_SIZE } from '../ui/layers/thumbnails.svelte';
     import { isToolHoverSuppressed } from '../tools/modifier_cursor';
     import { isEditableTarget } from '../lib/isEditableTarget';
+    import { colorToRgba01 } from '../lib/color';
     import TransformModeMenu from '../ui/TransformModeMenu.svelte';
+    import EditSessionFrame from './EditSessionFrame.svelte';
+    import { actions } from '../actions/registry';
 
     /** Optional pre-built instance. When provided, CanvasView skips the
      *  single-instance bootstrap (`initEditor`) and just wires the canvas
@@ -63,7 +67,7 @@
                     pan_x: inst.panX * dpr2, pan_y: inst.panY * dpr2,
                     zoom: inst.zoom, rotation: inst.rotation,
                     mirror_h: inst.mirrorH,
-                    screen_w: w, screen_h: h,
+                    screen_w: w, screen_h: h, dpr: dpr2,
                 });
                 // Drive the frame synchronously in this same task. The
                 // `canvas.width/height` write, the enqueued `resize`
@@ -119,8 +123,12 @@
                 const dims = providedInstance.pendingDims;
                 const docW = dims?.width ?? (config.get('canvas.width') as number);
                 const docH = dims?.height ?? (config.get('canvas.height') as number);
+                const dpi = dims?.dpi ?? null;
                 providedInstance.pendingDims = null;
-                await createInstance(canvas, docW, docH, providedInstance, { seedBackground });
+                await createInstance(canvas, docW, docH, providedInstance, {
+                    seedBackground,
+                    dpi,
+                });
                 if (seedBackground) {
                     await seedFreshDocument(providedInstance, docW, docH);
                 }
@@ -163,6 +171,10 @@
         } catch (e) {
             console.error("Failed to initialize Darkly:", e);
             toast.show('error', `Failed to initialize: ${e instanceof Error ? e.message : e}`);
+        } finally {
+            // Up, or as up as it is going to get. Chrome that holds off during
+            // the boot waits on this.
+            markAppReady();
         }
     });
 
@@ -427,10 +439,18 @@
                 pan_x: inst.panX * dpr, pan_y: inst.panY * dpr,
                 zoom: inst.zoom, rotation: inst.rotation,
                 mirror_h: inst.mirrorH,
-                screen_w: canvas.width, screen_h: canvas.height,
+                screen_w: canvas.width, screen_h: canvas.height, dpr,
             });
             inst.requestFrame();
         }
+    });
+
+    // Push the foreground whenever it changes: brush strokes paint with the
+    // engine's copy, and a stroke being edited redraws in it. A pointerdown is
+    // a later task than this effect's flush, so the colour always reaches the
+    // engine's request queue before the stroke that uses it.
+    $effect(() => {
+        inst.engine?.api.setForegroundColor({ rgba: colorToRgba01(inst.foreground) });
     });
 
     // HMR'ing this component re-runs onMount and creates a second WASM
@@ -472,6 +492,14 @@
     <!-- Right-click mode-switch menu for the transform tool. The tool sets
          `app.transformModeMenu`; this renders against it. -->
     <TransformModeMenu />
+
+    <!-- The open edit session's frame, from this instance's own engine. Its
+         buttons dispatch the same actions as Enter and Escape. -->
+    <EditSessionFrame
+        session={inst.engineState?.editSession ?? null}
+        onapply={() => actions.dispatch('applyEditSession')}
+        ondiscard={() => actions.dispatch('discardEditSession')}
+    />
 </div>
 
 <style>

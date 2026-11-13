@@ -16,7 +16,11 @@ use serde_json::Value;
 
 /// Run the exporter into a temp path and parse what it wrote.
 fn export() -> (Value, usize) {
-    let dir = std::env::temp_dir().join(format!("darkly-docs-test-{}", std::process::id()));
+    // One folder per call: the tests run in parallel in one process, and a
+    // shared folder let one test's `remove_dir_all` delete another's file.
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("darkly-docs-test-{}-{n}", std::process::id()));
     let out = dir.join("metadata.json");
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -344,9 +348,9 @@ fn export_is_a_faithful_projection() {
         }
     }
     assert_eq!(
-        previewable, 47,
-        "14 effects + 1 void + 16 blend modes + 16 brushes declare a preview \
-         recipe"
+        previewable, 56,
+        "14 effects + 1 void + 16 blend modes + 25 brushes (this fork adds 9 \
+         pattern and tint brushes) declare a preview recipe"
     );
 
     // Brushes carry no `preview` field of their own; the recipe lives on the
