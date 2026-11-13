@@ -11,6 +11,8 @@
 //! - Evaluating the brush graph per dab (CPU + GPU)
 //! - Per-dab save points for rewind capability
 
+use super::color_jitter::ColorJitter;
+use super::color_map::ColorMap;
 use super::eval::BrushGraphRunner;
 use super::gpu_context::{BrushGpuContext, MAX_DABS_PER_PHASE};
 use super::interpolation::lerp_paint_info;
@@ -208,6 +210,14 @@ pub struct StrokeEngine {
     /// mid-stroke layer growth). Stroke-stable: NOT cleared by
     /// [`Self::reset_render_state`]; divergence rewind reuses it.
     clone_source_frame: Option<crate::coord::CanvasRect>,
+
+    /// The colour map that sets each dab's paint colour, or `None` for the
+    /// stroke's one colour (`record.color`). Normalized when set.
+    color_map: Option<ColorMap>,
+    /// The colour selector's jitter, applied to each mapped colour with the
+    /// stroke seed. Only read with a colour map: without one the jitter is
+    /// already in `record.color`.
+    color_jitter: ColorJitter,
 }
 
 impl StrokeEngine {
@@ -286,7 +296,57 @@ impl StrokeEngine {
             clone_source_anchor,
             clone_dest_anchor: None,
             clone_source_frame: None,
+            color_map: None,
+            color_jitter: ColorJitter::default(),
         }
+    }
+
+    /// Paint each dab with `map`'s colour at the dab's place, shifted by
+    /// `jitter` drawn from the stroke seed, instead of the stroke's one
+    /// colour. `None`, or a map with no stops, keeps the one colour. Call
+    /// before the first dab.
+    pub fn set_color_map(&mut self, map: Option<&ColorMap>, jitter: ColorJitter) {
+        let factor = self.runner.dpi_factor();
+        self.color_map = map
+            .and_then(ColorMap::normalized)
+            .map(|m| m.in_canvas_pixels(factor));
+        self.color_jitter = jitter;
+    }
+
+    /// The length of the stabilized path in canvas pixels: the `distance`
+    /// its last vertex reaches when rendered, summed in the same order.
+    fn stabilized_length(&self) -> f32 {
+        let mut length = 0.0f32;
+        for pair in self.stabilizer.stabilized().windows(2) {
+            let (a, b) = (pair[0].pos, pair[1].pos);
+            length += (b[0] - a[0]).hypot(b[1] - a[1]);
+        }
+        length
+    }
+
+    /// Whether the colour map is driven by progress and its length is not
+    /// yet the stabilized path's: the dabs rendered so far, if any, used an
+    /// estimate.
+    pub fn progress_unsettled(&self) -> bool {
+        self.color_map
+            .as_ref()
+            .and_then(ColorMap::progress_length)
+            .is_some_and(|length| length != self.stabilized_length().max(1.0))
+    }
+
+    /// Give a progress-driven colour map the stabilized path's length, once
+    /// every event is in (pen-up, or a whole-stroke render). Returns `true`
+    /// when the length changed, so dabs already rendered with the old one
+    /// must be rendered again.
+    pub fn settle_progress_length(&mut self) -> bool {
+        if !self.progress_unsettled() {
+            return false;
+        }
+        let length = self.stabilized_length();
+        if let Some(map) = self.color_map.as_mut() {
+            map.set_progress_length(length);
+        }
+        true
     }
 
     /// A seed drawn from the wall clock, so two strokes of the same brush
@@ -622,10 +682,18 @@ impl StrokeEngine {
             }));
         }
 
+        // A colour map gives each dab its own colour, jittered after the
+        // map; without one every dab gets the stroke's colour.
+        let color = match &self.color_map {
+            Some(map) => self
+                .color_jitter
+                .apply(map.color_at(&dab_info), self.stroke_seed),
+            None => self.record.color,
+        };
         self.runner.clear_slots();
         self.runner.seed_sensors(
             &dab_info,
-            self.record.color,
+            color,
             self.stroke_seed,
             self.dab_count,
         );
@@ -729,6 +797,7 @@ impl StrokeEngine {
     /// segment is ever drawn without its real lookahead.
     pub fn render_whole(&mut self, gpu: &mut BrushGpuContext) {
         self.stabilize_pending();
+        self.settle_progress_length();
         self.begin_stroke(gpu, None);
         self.reset_render_state();
         if let Some(end) = self.stabilizer.len().checked_sub(1) {

@@ -249,6 +249,42 @@ export type ClearSelectionContentsReq = { id: number, };
 
 export type ClipboardExport = { rgba: Array<number>, width: number, height: number, offset_x: number, offset_y: number, };
 
+export type ColorJitter = { 
+/**
+ * Degrees.
+ */
+hue: number, 
+/**
+ * Normalized delta, `0..1`.
+ */
+saturation: number, 
+/**
+ * Normalized delta, `0..1`.
+ */
+value: number, };
+
+export type ColorMap = { 
+/**
+ * At least one stop. Order does not matter: [`Self::normalized`] sorts
+ * them by place.
+ */
+stops: Array<ColorStop>, driver: ColorMapDriver, space: ColorMapSpace, };
+
+export type ColorMapDriver = { "by": "distance", period: number, mirror: boolean, } | { "by": "progress", length: number, } | { "by": "pressure" } | { "by": "speed" } | { "by": "tilt" };
+
+export type ColorMapSpace = "srgb" | "linear" | "oklab";
+
+export type ColorStop = { 
+/**
+ * Place on the gradient, `0..=1`.
+ */
+pos: number, 
+/**
+ * Straight sRGB RGBA in `0..=1`, as picked (the same space as the
+ * foreground colour).
+ */
+color: [number, number, number, number], };
+
 export type CommitFilterPreviewReq = { node_id: number, filter_type: string, params: JsonValue, };
 
 export type ConvertLayerToSmartObjectReq = { node_id: number, };
@@ -1023,6 +1059,10 @@ export type SetBrushBlendModeReq = { mode: number, };
 
 export type SetCloneSourceReq = { x: number, y: number, layer: number | null, };
 
+export type SetColorJitterReq = { jitter: ColorJitter | null, };
+
+export type SetColorMapReq = { map: ColorMap, };
+
 export type SetDocumentNameReq = { name: string, };
 
 export type SetFilterParamsReq = { id: number, params: JsonValue, };
@@ -1064,6 +1104,8 @@ export type SetShapeParamsReq = { id: number, object: ObjectId, params: JsonValu
 export type SetShapeStyleReq = { id: number, object: ObjectId, fill: [number, number, number, number] | null, stroke: StrokeWire | null, };
 
 export type SetSplineKnotsReq = { id: number, object: number, knots: Array<[number, number]>, closed: boolean, ends?: [[number, number], [number, number]], };
+
+export type SetStrokeSeedReq = { seed: number | null, };
 
 export type SetTextBoxReq = { id: number, object: number, 
 /**
@@ -1237,6 +1279,7 @@ export type RequestKind =
     | 'catalogs'
     | 'clear_brush_cursor_preview_pose'
     | 'clear_clone_overlay'
+    | 'clear_color_map'
     | 'clear_history'
     | 'clear_overlay'
     | 'clear_overlay_mask'
@@ -1280,6 +1323,7 @@ export type RequestKind =
     | 'invert_selection'
     | 'is_dirty'
     | 'last_picked_color'
+    | 'last_stroke_seed'
     | 'layer_transform_capability'
     | 'layer_tree'
     | 'library_list'
@@ -1340,6 +1384,8 @@ export type RequestKind =
     | 'set_brush_blend_mode'
     | 'set_clone_overlay'
     | 'set_clone_source'
+    | 'set_color_jitter'
+    | 'set_color_map'
     | 'set_document_name'
     | 'set_filter_params'
     | 'set_foreground_color'
@@ -1361,6 +1407,7 @@ export type RequestKind =
     | 'set_shape_params'
     | 'set_shape_style'
     | 'set_spline_knots'
+    | 'set_stroke_seed'
     | 'set_text_box'
     | 'set_text_content'
     | 'set_text_style'
@@ -1463,6 +1510,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'catalogs',
     'clear_brush_cursor_preview_pose',
     'clear_clone_overlay',
+    'clear_color_map',
     'clear_history',
     'clear_overlay',
     'clear_overlay_mask',
@@ -1506,6 +1554,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'invert_selection',
     'is_dirty',
     'last_picked_color',
+    'last_stroke_seed',
     'layer_transform_capability',
     'layer_tree',
     'library_list',
@@ -1566,6 +1615,8 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'set_brush_blend_mode',
     'set_clone_overlay',
     'set_clone_source',
+    'set_color_jitter',
+    'set_color_map',
     'set_document_name',
     'set_filter_params',
     'set_foreground_color',
@@ -1587,6 +1638,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'set_shape_params',
     'set_shape_style',
     'set_spline_knots',
+    'set_stroke_seed',
     'set_text_box',
     'set_text_content',
     'set_text_style',
@@ -1697,6 +1749,7 @@ export interface EngineApi {
     catalogs(): Promise<Array<Catalog>>;
     clearBrushCursorPreviewPose(): void;
     clearCloneOverlay(): void;
+    clearColorMap(): void;
     clearHistory(): void;
     clearOverlay(): void;
     clearOverlayMask(): void;
@@ -1740,6 +1793,7 @@ export interface EngineApi {
     invertSelection(): void;
     isDirty(): Promise<boolean>;
     lastPickedColor(): Promise<{ bytes: Uint8Array }>;
+    lastStrokeSeed(): Promise<number | null>;
     layerTransformCapability(req: LayerTransformCapabilityReq): Promise<string>;
     layerTree(): Promise<LayerTree>;
     libraryList(): Promise<LibrarySnapshot>;
@@ -1800,6 +1854,8 @@ export interface EngineApi {
     setBrushBlendMode(req: SetBrushBlendModeReq): void;
     setCloneOverlay(req: SetOverlayReq): void;
     setCloneSource(req: SetCloneSourceReq): void;
+    setColorJitter(req: SetColorJitterReq): void;
+    setColorMap(req: SetColorMapReq): void;
     setDocumentName(req: SetDocumentNameReq): void;
     setFilterParams(req: SetFilterParamsReq): void;
     setForegroundColor(req: SetForegroundColorReq): void;
@@ -1821,6 +1877,7 @@ export interface EngineApi {
     setShapeParams(req: SetShapeParamsReq): void;
     setShapeStyle(req: SetShapeStyleReq): void;
     setSplineKnots(req: SetSplineKnotsReq): void;
+    setStrokeSeed(req: SetStrokeSeedReq): void;
     setTextBox(req: SetTextBoxReq): void;
     setTextContent(req: SetTextContentReq): void;
     setTextStyle(req: SetTextStyleReq): void;
@@ -1925,6 +1982,7 @@ export function makeApi(t: Transport): EngineApi {
         catalogs: () => t.request('catalogs'),
         clearBrushCursorPreviewPose: () => t.postFF('clear_brush_cursor_preview_pose'),
         clearCloneOverlay: () => t.postFF('clear_clone_overlay'),
+        clearColorMap: () => t.postFF('clear_color_map'),
         clearHistory: () => t.postFF('clear_history'),
         clearOverlay: () => t.postFF('clear_overlay'),
         clearOverlayMask: () => t.postFF('clear_overlay_mask'),
@@ -1968,6 +2026,7 @@ export function makeApi(t: Transport): EngineApi {
         invertSelection: () => t.postFF('invert_selection'),
         isDirty: () => t.request('is_dirty'),
         lastPickedColor: () => t.request('last_picked_color'),
+        lastStrokeSeed: () => t.request('last_stroke_seed'),
         layerTransformCapability: (req) => t.request('layer_transform_capability', req),
         layerTree: () => t.request('layer_tree'),
         libraryList: () => t.request('library_list'),
@@ -2028,6 +2087,8 @@ export function makeApi(t: Transport): EngineApi {
         setBrushBlendMode: (req) => t.postFF('set_brush_blend_mode', req),
         setCloneOverlay: (req) => t.postFF('set_clone_overlay', req),
         setCloneSource: (req) => t.postFF('set_clone_source', req),
+        setColorJitter: (req) => t.postFF('set_color_jitter', req),
+        setColorMap: (req) => t.postFF('set_color_map', req),
         setDocumentName: (req) => t.postFF('set_document_name', req),
         setFilterParams: (req) => t.postFF('set_filter_params', req),
         setForegroundColor: (req) => t.postFF('set_foreground_color', req),
@@ -2049,6 +2110,7 @@ export function makeApi(t: Transport): EngineApi {
         setShapeParams: (req) => t.postFF('set_shape_params', req),
         setShapeStyle: (req) => t.postFF('set_shape_style', req),
         setSplineKnots: (req) => t.postFF('set_spline_knots', req),
+        setStrokeSeed: (req) => t.postFF('set_stroke_seed', req),
         setTextBox: (req) => t.postFF('set_text_box', req),
         setTextContent: (req) => t.postFF('set_text_content', req),
         setTextStyle: (req) => t.postFF('set_text_style', req),

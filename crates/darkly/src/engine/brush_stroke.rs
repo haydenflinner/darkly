@@ -23,6 +23,10 @@ use darkly_macros::handlers;
 use super::pending_edit::{EditSessionKind, PendingEdit};
 use super::rendering::commit_undo_entry;
 use super::DarklyEngine;
+use std::sync::Arc;
+
+use crate::brush::color_jitter::ColorJitter;
+use crate::brush::color_map::ColorMap;
 use crate::brush::eval::BrushGraphRunner;
 use crate::brush::gpu_context::StrokeGpuSetup;
 use crate::brush::paint_info::PaintInformation;
@@ -42,10 +46,12 @@ use crate::undo::GpuRegionAction;
 /// What a stroke is painted under that comes from outside the brush graph,
 /// frozen when the stroke starts so that a re-render of the same events
 /// reproduces it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct StrokeConditions {
     /// Foreground colour as picked, before the seed's colour jitter.
     pub color: [f32; 4],
+    /// The colour map that replaces `color` per dab, if one is set.
+    pub color_map: Option<Arc<ColorMap>>,
     /// Seed for the brush's `random` nodes and for the colour jitter.
     pub seed: u32,
     /// Canvas pixels per CSS pixel: the stabilizer and the divergence
@@ -86,6 +92,16 @@ pub(crate) struct LastStroke {
 impl LastStroke {
     pub(crate) fn editing(&self) -> bool {
         self.edit.is_some()
+    }
+}
+
+impl DarklyEngine {
+    /// The seed the last stroke, kept until it settles, was painted with.
+    pub(crate) fn last_stroke_seed_kept(&self) -> Option<u32> {
+        self.last_stroke
+            .as_ref()
+            .map(|s| s.conditions.seed)
+            .or(self.settled_stroke_seed)
     }
 }
 
@@ -244,6 +260,7 @@ impl DarklyEngine {
         let view = &self.view_params;
         StrokeConditions {
             color: self.foreground_color,
+            color_map: self.color_map.clone(),
             seed: self.stroke_seed.unwrap_or_else(StrokeEngine::random_seed),
             // Canvas pixels per CSS pixel of pen travel at this view: the
             // stack measures resample spacing on screen, so smoothing feels
@@ -307,10 +324,11 @@ impl DarklyEngine {
         let divergence_epsilon = self.test_divergence_epsilon.unwrap_or(divergence_epsilon);
 
         // The colour selector's jitter is a pure function of the stroke
-        // seed, so a pinned seed replays the same colour.
-        let color = crate::brush::color_jitter::ColorJitter::from_config()
-            .apply(conditions.color, conditions.seed);
-        StrokeEngine::new(
+        // seed, so a pinned seed replays the same colour. With a colour map
+        // it shifts each mapped colour instead, after the map.
+        let jitter = self.color_jitter.unwrap_or_else(ColorJitter::from_config);
+        let color = jitter.apply(conditions.color, conditions.seed);
+        let mut engine = StrokeEngine::new(
             runner,
             color,
             self.active_spacing_config(),
@@ -321,7 +339,9 @@ impl DarklyEngine {
             conditions.seed,
             self.active_stamp_angle_rate(),
             self.doc.dpi,
-        )
+        );
+        engine.set_color_map(conditions.color_map.as_deref(), jitter);
+        engine
     }
 
     /// A stroke buffer for `engine` over `layer_id`'s paint target: sized to
@@ -461,6 +481,7 @@ impl DarklyEngine {
         let Some(stroke) = self.last_stroke.take() else {
             return;
         };
+        self.settled_stroke_seed = Some(stroke.conditions.seed);
         self.flush_pending_undo_commits();
         let Some(footprint) = stroke.footprint else {
             return;
@@ -513,7 +534,8 @@ impl DarklyEngine {
         };
         let conditions = StrokeConditions {
             color: self.foreground_color,
-            ..stroke.conditions
+            color_map: self.color_map.clone(),
+            ..stroke.conditions.clone()
         };
         let mut engine = self.build_stroke_engine(runner, &conditions);
         for event in &stroke.events {
@@ -694,5 +716,49 @@ impl DarklyEngine {
         }
         self.foreground_color = rgba;
         self.redraw_last_stroke();
+    }
+
+    /// Paint every following brush stroke with `map` in place of the
+    /// foreground colour: each dab gets the gradient's colour at the place
+    /// the map's driver gives it, then the colour jitter. Works with any
+    /// brush. A map with no stops clears it. Redraws the last stroke when
+    /// the artist is editing it.
+    ///
+    /// For the progress driver, `length` is the stroke's total length in
+    /// canvas pixels: exact for a replay, an estimate for a live stroke. At
+    /// pen-up the engine measures the stroke and, when the estimate was off,
+    /// redraws it at its true length.
+    #[handler]
+    pub fn set_color_map(&mut self, map: ColorMap) {
+        let map = map.normalized().map(Arc::new);
+        if self.color_map == map {
+            return;
+        }
+        self.color_map = map;
+        self.redraw_last_stroke();
+    }
+
+    /// Jitter every following brush stroke's colour by `jitter`, drawn
+    /// from the stroke seed, in place of the colour selector's
+    /// `colors.jitter*` prefs; `None` follows the prefs again. A request,
+    /// unlike the prefs, lands in order with the strokes around it, so a
+    /// replay can give each stroke its own amplitudes. Redraws the last
+    /// stroke when the artist is editing it.
+    #[handler]
+    pub fn set_color_jitter(&mut self, jitter: Option<ColorJitter>) {
+        if self.color_jitter == jitter {
+            return;
+        }
+        self.color_jitter = jitter;
+        self.redraw_last_stroke();
+    }
+
+    /// Paint every following brush stroke with the foreground colour again.
+    /// Redraws the last stroke when the artist is editing it.
+    #[handler]
+    pub fn clear_color_map(&mut self) {
+        if self.color_map.take().is_some() {
+            self.redraw_last_stroke();
+        }
     }
 }

@@ -1,13 +1,14 @@
 //! Paint Color node: outputs the current foreground color.
 //!
 //! Like pen_input, this node is special-cased: the runner seeds its
-//! output slot directly with the stroke's foreground color.
+//! output slot directly with each dab's colour, the stroke's foreground
+//! colour or, with a colour map, the map's colour at the dab.
 
 use std::sync::Arc;
 
 use crate::brush::eval::{BrushNodeEvaluator, EvalContext};
 use crate::brush::node::BrushNodeRegistration;
-use crate::brush::wgsl::{CompileWgslCtx, NodeWgsl, UniformField, WgslType};
+use crate::brush::wgsl::{CompileWgslCtx, DabField, NodeWgsl, WgslType};
 use crate::brush::wire::BrushWireType;
 use crate::brush::wire::ScalarValue;
 use crate::nodegraph::{NodeRegistration, PortDef};
@@ -40,18 +41,21 @@ impl BrushNodeEvaluator for PaintColorEvaluator {
         vec![]
     }
 
-    /// The stroke's foreground color is constant for every dab, so it
-    /// goes into the uniform buffer (one copy per stroke), not the
-    /// per-dab record. Only emitted if a downstream node consumes the
-    /// color output.
+    /// The paint colour is a per-dab record field. Without a colour map
+    /// every dab carries the stroke's one colour; with one
+    /// (`brush::color_map`) each dab carries its own. It cannot be a
+    /// uniform: the uniform buffer is packed once per flush from the last
+    /// dab's slots, so a per-dab colour there would paint the whole batch
+    /// with one dab's colour. Only emitted if a downstream node consumes
+    /// the color output.
     fn compile_wgsl(&self, cctx: &CompileWgslCtx) -> Result<NodeWgsl, String> {
         let mut wgsl = NodeWgsl::default();
         if !cctx.consumed_outputs.contains("color") {
             return Ok(wgsl);
         }
-        let field_name = cctx.uniform_field_name("color");
+        let field_name = cctx.dab_field_name("color");
         let key = field_name.clone();
-        wgsl.uniform_fields.push(UniformField {
+        wgsl.dab_fields.push(DabField {
             name: field_name.clone(),
             ty: WgslType::Vec4,
             pack: Arc::new(move |outputs, bytes| {
@@ -63,7 +67,7 @@ impl BrushNodeEvaluator for PaintColorEvaluator {
             }),
         });
         wgsl.outputs
-            .insert("color".into(), format!("u.{}", field_name));
+            .insert("color".into(), format!("d.{}", field_name));
         Ok(wgsl)
     }
 }

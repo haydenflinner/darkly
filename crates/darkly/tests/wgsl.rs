@@ -80,8 +80,10 @@ fn rough_ink_brush_compiles_to_nonempty_wgsl() {
     assert!(compiled.cursor_preview_wgsl.contains("@fragment"));
     assert!(compiled.cursor_preview_wgsl.contains("fn fs_main"));
     assert!(compiled.cursor_preview_wgsl.contains("shape_r_theta"));
-    assert!(compiled.dab_record_size >= 16); // intrinsic header + pen
-    assert!(compiled.uniform_size > 0); // intrinsic + paint_color
+    // intrinsic header (16) + the per-dab paint colour (16) + pen
+    assert!(compiled.dab_record_size >= 32);
+    // The paint colour is per dab (a colour map varies it), not a uniform.
+    assert!(compiled.dab_layout.iter().any(|f| f.name.ends_with("_color")));
     assert!(compiled.topology_hash != 0);
 }
 

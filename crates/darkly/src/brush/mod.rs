@@ -4,6 +4,7 @@ pub mod appearance_snapshot;
 pub mod builtin_brushes;
 pub mod checkpoint_ring;
 pub mod color_jitter;
+pub mod color_map;
 pub mod composite_pipeline;
 pub mod curve_math;
 pub mod eval;

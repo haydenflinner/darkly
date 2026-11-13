@@ -647,6 +647,19 @@ pub struct DarklyEngine {
     /// changes; a stroke freezes it at its start.
     pub(crate) foreground_color: [f32; 4],
 
+    /// The colour map brush strokes paint with in place of the foreground
+    /// colour, or `None` for the foreground colour. Session state like the
+    /// foreground: set with `set_color_map`, frozen by a stroke at its start.
+    pub(crate) color_map: Option<std::sync::Arc<crate::brush::color_map::ColorMap>>,
+
+    /// Colour jitter amplitudes set by request, in place of the
+    /// `colors.jitter*` prefs; `None` follows the prefs.
+    pub(crate) color_jitter: Option<crate::brush::color_jitter::ColorJitter>,
+
+    /// The seed of the last brush stroke that settled, for
+    /// `last_stroke_seed` once no stroke is held.
+    pub(crate) settled_stroke_seed: Option<u32>,
+
     /// Clone-brush set-source anchor in plane / canvas pixels, or `None`
     /// until the artist sets it via the set-source gesture. Session state:
     /// persists across strokes and across brush / tool switches (so the
@@ -919,6 +932,9 @@ impl DarklyEngine {
             stabilizer_registry: StabilizerRegistry::new(),
             brush_blend_mode: 0,
             foreground_color: [0.0, 0.0, 0.0, 1.0],
+            color_map: None,
+            color_jitter: None,
+            settled_stroke_seed: None,
             clone_source_anchor: None,
             guide_mode: guides::GuideMode::default(),
             stroke_guides: Vec::new(),

@@ -476,11 +476,26 @@ impl DarklyEngine {
         self.gpu_stroke_to(layer_id, op);
     }
 
-    /// Seed every following stroke's `random` nodes with `seed`, or with a
-    /// fresh wall-clock seed per stroke when `None` (the default). For
-    /// embedders that need random-node brushes to render reproducibly.
+    /// Seed every following stroke's `random` nodes and its colour jitter
+    /// with `seed`, or with a fresh wall-clock seed per stroke when `None`
+    /// (the default). For embedders that need a stroke to replay exactly
+    /// as it was painted: store the seed with the stroke, set it before the
+    /// replay.
+    #[handler]
     pub fn set_stroke_seed(&mut self, seed: Option<u32>) {
         self.stroke_seed = seed;
+    }
+
+    /// The seed of the brush stroke being painted, else of the last one,
+    /// whether it was set or drawn from the clock. `None` before the first
+    /// brush stroke. Read after the stroke's first point to keep the seed
+    /// the engine picked.
+    #[handler]
+    pub fn last_stroke_seed(&self) -> Option<u32> {
+        self.brush_stroke
+            .as_ref()
+            .map(|s| s.conditions.seed)
+            .or_else(|| self.last_stroke_seed_kept())
     }
 
     /// GPU paint path for all stroke operations.
@@ -946,10 +961,11 @@ impl DarklyEngine {
         let Some(layer_id) = self.active_stroke_layer else {
             return;
         };
-        let Some(mut stroke) = self
-            .brush_stroke
-            .take_if(|s| s.engine.has_unrendered_input())
-        else {
+        // Pen-up also renders a stroke with nothing new when its progress
+        // colour map was drawn with an estimated length.
+        let Some(mut stroke) = self.brush_stroke.take_if(|s| {
+            s.engine.has_unrendered_input() || (final_flush && s.engine.progress_unsettled())
+        }) else {
             return;
         };
         // Field-level borrows (rather than a `&self` method) so the setup
@@ -991,7 +1007,14 @@ impl DarklyEngine {
         // Vertices from `first_new` on have never been rendered; on the
         // stroke's first flush that is all of them.
         let first_new = engine.rendered_len();
-        let div_idx = engine.take_divergence();
+        let mut div_idx = engine.take_divergence();
+        // At pen-up a progress colour map learns the stroke's true length.
+        // Dabs already rendered used the estimate, so the stroke renders
+        // again from its start, the way a divergence at the first vertex
+        // does. A stroke rendered whole here needs no second pass.
+        if final_flush && engine.settle_progress_length() && first_new > 0 {
+            div_idx = Some(0);
+        }
         let max_div = engine.max_divergence_window();
         let tip_vi = engine.stabilizer_len().saturating_sub(1);
 

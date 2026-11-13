@@ -25,7 +25,8 @@ const SALT: u32 = 0x4A17_7E52;
 
 /// Jitter amplitudes: each channel's offset is drawn uniformly from
 /// `[-amp, amp]`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 pub struct ColorJitter {
     /// Degrees.
     pub hue: f32,
