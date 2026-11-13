@@ -252,8 +252,11 @@ impl BrushNodeEvaluator for ShapeEvaluator {
         // `_shape.wgsl`): the softness band is applied *perpendicular* to
         // the edge, not radially, so the bumpy silhouettes feather with a
         // uniform-width band along every edge instead of caving in. The
-        // `0.004` floor keeps a one-pixel-ish anti-aliased boundary at
-        // softness == 0.
+        // band is in radius units, so its floor is one canvas pixel
+        // (`d.inv_radius_target_px`, the reciprocal of the radius in
+        // pixels): a small hard tip keeps a full pixel of anti-aliased
+        // edge, where a fixed fraction of the radius would be a sliver of
+        // a pixel and leave the stroke's edge stair-stepped.
         let params_ident = cctx.ident("circle_params");
         let circle_ident = cctx.ident("circle");
         let body = format!(
@@ -270,7 +273,7 @@ impl BrushNodeEvaluator for ShapeEvaluator {
              \x20       max(({n3}), 0.05),\n\
              \x20       clamp(({aspect}), 0.01, 1.0),\n\
              \x20   );\n\
-             \x20   let {circle_ident}_band: f32 = max(clamp(({softness}), 0.0, 1.0), 0.004);\n\
+             \x20   let {circle_ident}_band: f32 = max(clamp(({softness}), 0.0, 1.0), d.inv_radius_target_px);\n\
              \x20   let {circle_ident}: f32 = shape_coverage({params_ident}, theta, local_dist, {circle_ident}_band);\n",
         );
         wgsl.body = body;

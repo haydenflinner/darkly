@@ -296,7 +296,7 @@ impl BrushNodeEvaluator for PolygonEvaluator {
              \x20   // (coverage reaches 0 at the edge), like the circle family's\n\
              \x20   // `shape_coverage`, so softness never blooms past the disc-clip.\n\
              \x20   let {ident}_sd: f32 = {sdf}(local_uv, {ident}_tinv, {ident}_n, {ident}_cr) - {ident}_round;\n\
-             \x20   let {ident}_band: f32 = max(clamp(({softness}), 0.0, 1.0), 0.004);\n\
+             \x20   let {ident}_band: f32 = max(clamp(({softness}), 0.0, 1.0), d.inv_radius_target_px);\n\
              \x20   let {ident}: f32 = smoothstep(0.0, {ident}_band, -{ident}_sd);\n"
         );
         wgsl.outputs.insert("mask".into(), ident);
