@@ -354,3 +354,26 @@ fn fill_landing_after_its_layer_grew_commits_cleanly() {
     assert_eq!(pixel_at(&engine, layer_id, 100, 100), [0, 255, 0, 255]);
     assert_eq!(pixel_at(&engine, layer_id, -40, 200), [0, 0, 0, 0]);
 }
+
+/// The last stroke stays editable until the next action settles it, so it
+/// isn't on the undo stack yet. `history_status` still counts it: a host's
+/// "can I undo?" and its "something changed" signal must see a stroke the
+/// moment it ends, and undo settles it before popping.
+#[test]
+fn history_status_counts_the_kept_last_stroke() {
+    let mut engine = test_engine(64, 64);
+    let layer = engine.add_raster_layer(None);
+    engine.clear_history();
+    assert_eq!(engine.history_status().undo, 0);
+    stroke(&mut engine, layer, &[(10.0, 10.0), (40.0, 40.0)]);
+    let one = engine.history_status();
+    assert_eq!((one.undo, one.redo), (1, 0), "one stroke is one undo step at once");
+    stroke(&mut engine, layer, &[(10.0, 40.0), (40.0, 10.0)]);
+    assert_eq!(engine.history_status().undo, 2, "two strokes, two steps");
+    engine.undo();
+    let after = engine.history_status();
+    assert_eq!((after.undo, after.redo), (1, 1), "undo takes the kept stroke");
+    stroke(&mut engine, layer, &[(5.0, 5.0), (20.0, 5.0)]);
+    let fresh = engine.history_status();
+    assert_eq!((fresh.undo, fresh.redo), (2, 0), "a new stroke ends the redo chain");
+}

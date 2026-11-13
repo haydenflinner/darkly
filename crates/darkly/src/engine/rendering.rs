@@ -881,9 +881,14 @@ impl DarklyEngine {
     /// buttons, skipped no-op presses) and diagnostics.
     #[handler]
     pub fn history_status(&self) -> HistoryStatus {
+        // The last brush stroke stays editable until the next action
+        // settles it, and a fill or gradient waits for its diff, so neither
+        // is on the stack yet. `undo` settles both before it pops, so each
+        // is an undo step now, and settling clears the redo history.
+        let pending = usize::from(self.last_stroke.is_some()) + self.pending_undo_commits.len();
         HistoryStatus {
-            undo: self.undo_stack.undo_len(),
-            redo: self.undo_stack.redo_len(),
+            undo: self.undo_stack.undo_len() + pending,
+            redo: if pending > 0 { 0 } else { self.undo_stack.redo_len() },
         }
     }
 
