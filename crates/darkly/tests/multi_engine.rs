@@ -26,6 +26,10 @@ fn paint_dot(engine: &mut DarklyEngine, layer_id: LayerId, x: f32, y: f32, r: f3
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
+        cr: None,
+        cg: None,
+        cb: None,
+        ca: None,
     });
     engine.end_stroke();
     engine.render(0.0);

@@ -364,6 +364,10 @@ fn spacing_scales_with_the_document_dpi() {
                 rotation: 0.0,
                 tangential_pressure: 0.0,
                 time_ms: i as f64 * 16.0,
+                cr: None,
+                cg: None,
+                cb: None,
+                ca: None,
             });
         }
         engine.end_stroke();
@@ -411,6 +415,10 @@ fn a_stroke_scales_with_the_document_dpi() {
                 rotation: 0.0,
                 tangential_pressure: 0.0,
                 time_ms: i as f64 * 16.0,
+                cr: None,
+                cg: None,
+                cb: None,
+                ca: None,
             });
         }
         engine.end_stroke();

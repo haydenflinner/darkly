@@ -317,10 +317,10 @@ fn all_fifty_six_assets_land() {
             ("effects", 14),
             ("voids", 1),
             ("blendModes", 16),
-            ("brushes", 25),
+            ("brushes", 26),
         ])
     );
-    assert_eq!(counts.values().sum::<usize>(), 56);
+    assert_eq!(counts.values().sum::<usize>(), 57);
 }
 
 /// The set of directories **found by walking the output** equals the previewable
@@ -392,7 +392,7 @@ fn every_frame_is_the_size_its_entry_declares() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 56);
+    assert_eq!(checked, 57);
 }
 
 /// For every asset the PNG count equals the frame count the declaration says
@@ -776,7 +776,7 @@ fn every_brush_renders_the_same_bytes_twice() {
         );
         checked += 1;
     }
-    assert_eq!(checked, 25, "the shipped brush set");
+    assert_eq!(checked, 26, "the shipped brush set");
 }
 
 /// Every brush asset is one frame, and that frame shows a stroke.
@@ -788,7 +788,7 @@ fn every_brush_renders_the_same_bytes_twice() {
 fn every_brush_asset_shows_a_stroke() {
     let (dir, manifest) = assets();
     let entries = &manifest.assets[darkly::brush::builtin_brushes::CATALOG_ID];
-    assert_eq!(entries.len(), 25);
+    assert_eq!(entries.len(), 26);
 
     for (type_id, asset) in entries {
         assert_eq!(asset.frames, 1, "`{type_id}` is a still");

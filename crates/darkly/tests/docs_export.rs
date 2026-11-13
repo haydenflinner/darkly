@@ -348,9 +348,9 @@ fn export_is_a_faithful_projection() {
         }
     }
     assert_eq!(
-        previewable, 56,
-        "14 effects + 1 void + 16 blend modes + 25 brushes (this fork adds 9 \
-         pattern and tint brushes) declare a preview recipe"
+        previewable, 57,
+        "14 effects + 1 void + 16 blend modes + 26 brushes (this fork adds 9 \
+         pattern and tint brushes and Rainbow) declare a preview recipe"
     );
 
     // Brushes carry no `preview` field of their own; the recipe lives on the

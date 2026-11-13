@@ -67,6 +67,15 @@ pub struct PaintInformation {
     /// Fade sensor (0-1): normalized distance along the stroke, 0 at start,
     /// 1 at the configured fade length.  Clamps to 1 beyond the fade distance.
     pub fade: f32,
+
+    /// The colour the host sent with this sample (straight sRGB RGBA,
+    /// `0..=1`), or `None` when it sent none. The stroke engine resolves
+    /// `None` to the stroke's foreground colour before the stabilizer sees
+    /// the sample, so every vertex of the stabilized polyline carries a
+    /// colour. The recorded raw events keep `None`, so a redraw under
+    /// another foreground colour repaints the uncoloured points in it.
+    #[serde(default)]
+    pub color: Option<[f32; 4]>,
 }
 
 /// Speed normalization cutoff: `speed_px_per_sec / MAX_SPEED_PX_PER_SEC`

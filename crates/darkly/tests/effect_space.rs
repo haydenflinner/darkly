@@ -593,6 +593,10 @@ fn effect_instances_are_not_rebuilt_every_frame() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: 0.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
         engine.end_stroke();
         engine.render(0.0);

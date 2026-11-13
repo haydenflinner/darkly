@@ -49,6 +49,10 @@ fn paint_full_stroke(engine: &mut DarklyEngine, layer_id: LayerId, w: u32, h: u3
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: x_step as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
     }
     engine.end_stroke();
@@ -479,6 +483,10 @@ fn selection_intersect_mode() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: x_step as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
     }
     engine.end_stroke();
@@ -496,6 +504,10 @@ fn selection_intersect_mode() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: x_step as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
     }
     engine.end_stroke();
@@ -594,6 +606,10 @@ fn selection_clear() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: step as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
     }
     engine.end_stroke();
@@ -725,6 +741,10 @@ fn clear_selection_contents() {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
+        cr: None,
+        cg: None,
+        cb: None,
+        ca: None,
     });
     engine.end_stroke();
     engine.render(0.0);
@@ -830,6 +850,10 @@ fn no_selection_paints_normally() {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
+        cr: None,
+        cg: None,
+        cb: None,
+        ca: None,
     });
     engine.end_stroke();
 

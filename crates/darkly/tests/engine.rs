@@ -30,6 +30,10 @@ fn paint_at(engine: &mut DarklyEngine, layer_id: LayerId, x: f32, y: f32, r: f32
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
+        cr: None,
+        cg: None,
+        cb: None,
+        ca: None,
     });
     engine.end_stroke();
     // A frame, so the readbacks the stroke queued land.
@@ -58,6 +62,10 @@ fn paint_full_stroke(engine: &mut DarklyEngine, layer_id: LayerId, w: u32, h: u3
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: x_step as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
     }
     engine.end_stroke();
@@ -752,6 +760,10 @@ fn lasso_selection_performance_and_correctness() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: x_step as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
     }
     engine.end_stroke();
@@ -815,6 +827,10 @@ fn paint_horizontal_stroke(engine: &mut DarklyEngine, layer_id: LayerId, w: u32,
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: i as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
         // A frame per sample, so a stroke that could rewind does.
         engine.render(0.0);
@@ -974,6 +990,10 @@ fn small_brush_does_not_emit_subpixel_dab_spacing() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: i as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
     }
     engine.end_stroke();
@@ -1419,6 +1439,10 @@ fn mid_stroke_growth_preserves_already_saved_region() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: x_step as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
     }
     engine.end_stroke();
@@ -1907,6 +1931,10 @@ fn stroke_crossing_canvas_edge_keeps_early_dabs_in_place() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: step as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
     }
     engine.end_stroke();
@@ -2235,6 +2263,10 @@ fn paint_mask_dab(engine: &mut DarklyEngine, host_id: LayerId, x: f32, y: f32, v
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
+        cr: None,
+        cg: None,
+        cb: None,
+        ca: None,
     });
     engine.end_stroke();
     engine.render(0.0);
@@ -2443,6 +2475,10 @@ fn engine_no_mask_brush_safe_on_layer() {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
+        cr: None,
+        cg: None,
+        cb: None,
+        ca: None,
     });
     engine.end_stroke();
     engine.render(0.0);
@@ -2967,6 +3003,10 @@ fn painting_mask_past_bounds_grows_mask_independently() {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
+        cr: None,
+        cg: None,
+        cb: None,
+        ca: None,
     };
     engine.begin_stroke(mask_id).unwrap();
     engine.stroke_to(black((ox + 30) as f32, (oy + 30) as f32));
@@ -3238,6 +3278,10 @@ fn apply_mask_reveals_host_outside_mask_footprint() {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
+        cr: None,
+        cg: None,
+        cb: None,
+        ca: None,
     });
     engine.end_stroke();
     engine.test_flush_readbacks();
@@ -5476,6 +5520,10 @@ fn brush_sample(x: f32, y: f32, time_ms: f64) -> StrokeOp {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms,
+        cr: None,
+        cg: None,
+        cb: None,
+        ca: None,
     }
 }
 
@@ -5776,6 +5824,10 @@ fn run_predicted_l_stroke(
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: t,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
         t += 16.0;
     };
@@ -5895,6 +5947,10 @@ fn predicted_stroke_keeps_checkpoint_coverage() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: i as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
     }
     engine.end_stroke();
@@ -6834,6 +6890,10 @@ fn brush_op(x: f32, y: f32) -> StrokeOp {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
+        cr: None,
+        cg: None,
+        cb: None,
+        ca: None,
     }
 }
 

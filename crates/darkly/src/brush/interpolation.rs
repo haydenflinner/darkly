@@ -29,7 +29,19 @@ pub fn lerp_paint_info(a: &PaintInformation, b: &PaintInformation, t: f32) -> Pa
         index: b.index,
         // Fade lerps with distance.
         fade: lerp(a.fade, b.fade, t),
+        color: lerp_color(a.color, b.color, t),
     }
+}
+
+/// Blend two samples' colours channel by channel, straight RGBA. Only a
+/// segment whose ends both carry a colour has one: the stroke engine gives
+/// every sample a colour before interpolating, so a segment with an
+/// uncoloured end exists only off the stroke path (the hover preview),
+/// where every sample is uncoloured.
+#[inline]
+fn lerp_color(a: Option<[f32; 4]>, b: Option<[f32; 4]>, t: f32) -> Option<[f32; 4]> {
+    let (a, b) = (a?, b?);
+    Some(std::array::from_fn(|i| lerp(a[i], b[i], t)))
 }
 
 #[inline]
@@ -85,6 +97,31 @@ mod tests {
         };
         let mid = lerp_paint_info(&a, &b, 0.5);
         assert_eq!(mid.motion, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn lerp_blends_colour_and_keeps_equal_colours_exact() {
+        let red = PaintInformation {
+            color: Some([1.0, 0.0, 0.0, 1.0]),
+            ..Default::default()
+        };
+        let blue = PaintInformation {
+            color: Some([0.0, 0.0, 1.0, 1.0]),
+            ..Default::default()
+        };
+        let mid = lerp_paint_info(&red, &blue, 0.25).color.unwrap();
+        assert!((mid[0] - 0.75).abs() < 1e-6 && (mid[2] - 0.25).abs() < 1e-6);
+        // A one-colour stroke must paint that colour bit for bit.
+        let c = Some([0.3, 0.6, 0.9, 0.7]);
+        let a = PaintInformation { color: c, ..red };
+        let b = PaintInformation { color: c, ..blue };
+        for t in [0.0, 0.1, 0.37, 0.999] {
+            assert_eq!(lerp_paint_info(&a, &b, t).color, c);
+        }
+        assert_eq!(
+            lerp_paint_info(&a, &PaintInformation::default(), 0.5).color,
+            None
+        );
     }
 
     #[test]

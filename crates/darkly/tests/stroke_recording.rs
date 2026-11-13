@@ -89,3 +89,30 @@ fn rejects_empty_event_list() {
         other => panic!("expected Empty, got {other:?}"),
     }
 }
+
+#[test]
+fn recorded_point_colours_reach_the_stroke_op() {
+    let recording = StrokeRecording::load(&fixture_path("stroke_recording_sample.json"))
+        .expect("fixture parses");
+    match recording.events[0].to_stroke_op((1.0, 1.0)) {
+        StrokeOp::BrushStroke { cr, cg, cb, ca, .. } => {
+            assert_eq!(
+                (cr, cg, cb, ca),
+                (Some(0.0), Some(0.0), Some(0.0), Some(1.0))
+            );
+        }
+        _ => panic!("expected BrushStroke variant"),
+    }
+    // A recording without colours replays without them.
+    let src = r#"{"version":1,"canvas_width":1,"canvas_height":1,"events":[
+        {"x":0.0,"y":0.0,"pressure":0.0,"x_tilt":0.0,"y_tilt":0.0,
+         "rotation":0.0,"tangential_pressure":0.0,"time_ms":0.0}
+    ]}"#;
+    let recording = StrokeRecording::from_json_str(src).expect("colourless recording parses");
+    match recording.events[0].to_stroke_op((1.0, 1.0)) {
+        StrokeOp::BrushStroke { cr, cg, cb, ca, .. } => {
+            assert_eq!((cr, cg, cb, ca), (None, None, None, None));
+        }
+        _ => panic!("expected BrushStroke variant"),
+    }
+}

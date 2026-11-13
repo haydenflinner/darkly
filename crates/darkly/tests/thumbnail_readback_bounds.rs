@@ -16,9 +16,7 @@
 use darkly::engine::types::StrokeOp;
 use darkly::engine::DarklyEngine;
 use darkly::gpu::context::GpuContext;
-use darkly::gpu::readback::{
-    request_readback, ReadbackScheduler, MAX_EXTRACT_BYTES_PER_POLL,
-};
+use darkly::gpu::readback::{request_readback, ReadbackScheduler, MAX_EXTRACT_BYTES_PER_POLL};
 use darkly::gpu::test_utils::{create_test_texture, test_device};
 
 const W: u32 = 2048;
@@ -37,6 +35,10 @@ fn paint_one_dab(engine: &mut DarklyEngine, layer_id: darkly::layer::LayerId) {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
+        cr: None,
+        cg: None,
+        cb: None,
+        ca: None,
     });
     engine.end_stroke();
 }
@@ -111,8 +113,7 @@ fn readback_rows_samples_evenly_spaced_source_rows() {
         for x in 0..w {
             let p = ((i * w + x) * 4) as usize;
             assert_eq!(
-                pixels[p],
-                src_y,
+                pixels[p], src_y,
                 "output row {i} col {x} should be source row {src_y}"
             );
             assert_eq!(pixels[p + 3], 255);
@@ -134,8 +135,7 @@ fn poll_paces_large_readbacks_to_bound_memory() {
     // the largest texture the downlevel-defaults test device allows.
     let (w, h) = (2048u32, 2048u32);
     let region_bytes = (w * h * 4) as usize;
-    let (texture, _view) =
-        create_test_texture(&device, &queue, w, h, &vec![0xABu8; region_bytes]);
+    let (texture, _view) = create_test_texture(&device, &queue, w, h, &vec![0xABu8; region_bytes]);
 
     let mut sched: ReadbackScheduler<u32> = ReadbackScheduler::new();
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -188,6 +188,10 @@ fn poll_paces_large_readbacks_to_bound_memory() {
         "96 MB of readbacks must take >1 poll at a 64 MB budget (got {batches})"
     );
     contexts.sort_unstable();
-    assert_eq!(contexts, vec![0, 1, 2, 3, 4, 5], "every readback must still complete");
+    assert_eq!(
+        contexts,
+        vec![0, 1, 2, 3, 4, 5],
+        "every readback must still complete"
+    );
     assert_eq!(delivered, 6 * region_bytes);
 }

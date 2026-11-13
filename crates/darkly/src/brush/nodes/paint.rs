@@ -13,7 +13,7 @@
 //! - **The per-dab record schema is dynamic**, sized by what fields
 //!   the brush's nodes contribute. No fixed `PaintDabRecord` struct.
 //! - **The uniform buffer carries stroke-constant values** from any
-//!   upstream nodes that declared `uniform_fields` (e.g. `paint_color`).
+//!   upstream nodes that declared `uniform_fields` (e.g. `clone_source`).
 //! - **The ground is the stroke scratch**, a read-write `r32uint`
 //!   storage texture holding packed premultiplied RGBA8
 //!   ([`PACKED_GROUND_FORMAT`]). A thread whose dab has no coverage at

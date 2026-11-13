@@ -579,6 +579,10 @@ impl DarklyEngine {
                 rotation,
                 tangential_pressure,
                 time_ms,
+                cr,
+                cg,
+                cb,
+                ca,
             } => {
                 // Pen guides constrain the tip in plane space before the
                 // stabilizer sees it: the wall refuses crossings, snap
@@ -596,6 +600,7 @@ impl DarklyEngine {
                     rotation,
                     tangential_pressure,
                     time_ms,
+                    super::types::point_color(cr, cg, cb, ca),
                 );
             }
         }
@@ -872,7 +877,9 @@ impl DarklyEngine {
     /// conditions it starts under) on the first event, then feeds the event
     /// to the stabilizer. Nothing renders here: the events
     /// that arrive between two frames render together in
-    /// [`Self::flush_stroke`], which the frame and pen-up run.
+    /// [`Self::flush_stroke`], which the frame and pen-up run. `color` is
+    /// the point's own colour, or `None` to paint it in the stroke's
+    /// foreground colour.
     #[allow(clippy::too_many_arguments)]
     fn brush_stroke_to(
         &mut self,
@@ -885,6 +892,7 @@ impl DarklyEngine {
         rotation: f32,
         tangential_pressure: f32,
         time_ms: f64,
+        color: Option<[f32; 4]>,
     ) {
         if self.brush_stroke.is_none() {
             let Some(runner) = self.compile_active_brush() else {
@@ -923,6 +931,7 @@ impl DarklyEngine {
             rotation,
             tangential_pressure,
             time: engine.stroke_seconds(time_ms),
+            color,
             ..Default::default()
         };
         engine.stabilize(info);

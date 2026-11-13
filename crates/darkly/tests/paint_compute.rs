@@ -76,6 +76,10 @@ fn event(x: f32, y: f32, t: f64) -> StrokeOp {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: t,
+        cr: None,
+        cg: None,
+        cb: None,
+        ca: None,
     }
 }
 

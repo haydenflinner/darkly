@@ -7,9 +7,10 @@
 //! until the next action settles it into an undo entry. Until then the
 //! artist can edit it: in stroke edit, every change to the brush or the
 //! foreground colour redraws it from its events with the brush as it then
-//! is. Applying the edit leaves stroke edit and keeps the stroke, still
-//! editable until it settles; discarding it puts back the pixels the stroke
-//! had when the artist entered.
+//! is. An event that carries its own colour keeps it through the redraw;
+//! the others take the foreground colour. Applying the edit leaves stroke
+//! edit and keeps the stroke, still editable until it settles; discarding
+//! it puts back the pixels the stroke had when the artist entered.
 //!
 //! The undo entry is committed from the stroke's own pre-stroke snapshot,
 //! over the undo-storage tiles its dabs' write footprints touch: the rect
@@ -68,7 +69,8 @@ pub(crate) struct BrushStroke {
 /// settles it.
 pub(crate) struct LastStroke {
     layer_id: LayerId,
-    /// The raw pen events, as the stroke engine recorded them.
+    /// The raw pen events, as the stroke engine recorded them, each with
+    /// its own colour when the host sent one.
     events: Vec<PaintInformation>,
     conditions: StrokeConditions,
     /// Scratch plus the pre-stroke snapshot: what a redraw composites onto
@@ -492,7 +494,9 @@ impl DarklyEngine {
 
     /// Redraw the last stroke from its raw events with the brush, the
     /// foreground colour and the clone source as they are now, keeping the
-    /// rest of its conditions. A no-op unless the artist is editing it.
+    /// rest of its conditions. Events that carry their own colour keep it;
+    /// only the uncoloured ones take the foreground colour. A no-op unless
+    /// the artist is editing it.
     ///
     /// The new rendering lands the way a stroke's own flush lands: the
     /// terminal's whole-scratch prologue, every dab, then the commit, which

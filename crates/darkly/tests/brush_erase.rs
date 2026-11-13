@@ -58,6 +58,10 @@ fn paint_stroke_across(engine: &mut DarklyEngine, layer_id: LayerId, w: u32, h: 
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: x_step as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
     }
     engine.end_stroke();

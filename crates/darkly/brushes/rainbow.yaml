@@ -1,0 +1,70 @@
+name: Rainbow
+description: A round tip whose colour runs through the whole hue circle as the stroke travels, so one stroke paints a rainbow. It ignores the foreground colour; Cycle length sets how far the stroke goes for one full turn of hue.
+nodes:
+  brush_settings:
+    type: brush_settings
+    inputs:
+      size: 0.2
+      spacing: 0.05
+      stabilize: 0.3
+  circle:
+    type: circle
+    inputs:
+      softness: 0.15
+  cycle:
+    type: user_input
+    name: Cycle length
+    comment: Distance along the stroke, in canvas pixels, for one full turn of the hue circle
+    inputs:
+      value: 600.0
+    ranges:
+      value:
+      - 50.0
+      - 4000.0
+  divide:
+    type: divide
+    name: Turns travelled
+    comment: Distance along the stroke over the cycle length counts the turns of hue
+  hsv:
+    type: hsv
+    name: Hue wheel
+    comment: Pure red turned around the hue circle; the hue wraps every 360 degrees
+    inputs:
+      color:
+      - 1.0
+      - 0.0
+      - 0.0
+  multiply:
+    type: multiply
+    name: Turns to degrees
+    inputs:
+      b: 360.0
+    ranges:
+      b:
+      - 0.0
+      - 360.0
+  paint:
+    type: paint
+  pen_input:
+    type: pen_input
+  stamp:
+    type: stamp
+connections:
+- circle.mask -> stamp.tip
+- cycle.value -> divide.b
+- divide.result -> multiply.a
+- hsv.output -> stamp.color
+- multiply.result -> hsv.hue
+- pen_input.distance -> divide.a
+- pen_input.position -> paint.position
+- stamp.dab -> paint.rgba
+exposed_ports:
+  brush_settings.size: {}
+  brush_settings.stabilize: {}
+  cycle.value:
+    label: Cycle length
+    description: How far the stroke travels for one full turn of the hue circle
+    icon: fa6-solid:ruler-horizontal
+    unit: Pixels
+  circle.softness: {}
+  paint.opacity: {}

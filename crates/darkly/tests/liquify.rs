@@ -482,6 +482,10 @@ fn liquify_stroke_through_engine_preserves_detail() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: step as f64 * 16.0,
+            cr: None,
+            cg: None,
+            cb: None,
+            ca: None,
         });
     }
     engine.end_stroke();

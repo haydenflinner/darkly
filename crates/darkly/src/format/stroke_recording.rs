@@ -47,6 +47,17 @@ pub struct RecordedEvent {
     /// itself is also forwarded into the engine so the stabilizer sees
     /// the original cadence regardless of how the harness paces dispatches.
     pub time_ms: f64,
+    /// The sample's own colour, as [`StrokeOp::BrushStroke`] carries it.
+    /// Absent channels replay as absent, so the sample paints in the
+    /// replaying engine's foreground colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cr: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cg: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cb: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca: Option<f32>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -102,6 +113,10 @@ impl RecordedEvent {
             rotation: self.rotation,
             tangential_pressure: self.tangential_pressure,
             time_ms: self.time_ms,
+            cr: self.cr,
+            cg: self.cg,
+            cb: self.cb,
+            ca: self.ca,
         }
     }
 }

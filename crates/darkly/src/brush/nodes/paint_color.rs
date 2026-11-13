@@ -1,13 +1,17 @@
-//! Paint Color node: outputs the current foreground color.
+//! Paint Color node: outputs the colour the dab paints in.
 //!
 //! Like pen_input, this node is special-cased: the runner seeds its
-//! output slot directly with the stroke's foreground color.
+//! output slot directly, per dab, with the dab's colour. That is the
+//! foreground colour unless the stroke's points carry colours of their
+//! own (`StrokeOp::BrushStroke`'s `cr`, `cg`, `cb`, `ca`), in which case
+//! it is the colour interpolated between the two points the dab lies
+//! between.
 
 use std::sync::Arc;
 
 use crate::brush::eval::{BrushNodeEvaluator, EvalContext};
 use crate::brush::node::BrushNodeRegistration;
-use crate::brush::wgsl::{CompileWgslCtx, NodeWgsl, UniformField, WgslType};
+use crate::brush::wgsl::{CompileWgslCtx, DabField, NodeWgsl, WgslType};
 use crate::brush::wire::BrushWireType;
 use crate::brush::wire::ScalarValue;
 use crate::nodegraph::{NodeRegistration, PortDef};
@@ -20,9 +24,9 @@ pub fn register() -> BrushNodeRegistration {
             type_id: TYPE_ID,
             category: "color",
             display_name: "Paint Color",
-            description: "The color currently selected in the toolbar.",
+            description: "The color currently selected in the toolbar, or the color the stroke's points carry.",
             ports: vec![PortDef::output("color", BrushWireType::Vec4)
-                .with_description("Current foreground painting color (RGBA)")],
+                .with_description("The dab's painting color (RGBA): the foreground color, or the stroke's own per-point color where it has one")],
             is_gpu: false,
             is_terminal: false,
             supports_erase: true,
@@ -40,18 +44,19 @@ impl BrushNodeEvaluator for PaintColorEvaluator {
         vec![]
     }
 
-    /// The stroke's foreground color is constant for every dab, so it
-    /// goes into the uniform buffer (one copy per stroke), not the
-    /// per-dab record. Only emitted if a downstream node consumes the
-    /// color output.
+    /// The colour can change from dab to dab (a stroke whose points carry
+    /// their own colours), so it rides the per-dab record like the pen
+    /// sensors do. The uniform buffer is packed once per flush from the
+    /// flush's last dab, which would paint every dab of a flush in one
+    /// colour. Only emitted if a downstream node consumes the color output.
     fn compile_wgsl(&self, cctx: &CompileWgslCtx) -> Result<NodeWgsl, String> {
         let mut wgsl = NodeWgsl::default();
         if !cctx.consumed_outputs.contains("color") {
             return Ok(wgsl);
         }
-        let field_name = cctx.uniform_field_name("color");
+        let field_name = cctx.dab_field_name("color");
         let key = field_name.clone();
-        wgsl.uniform_fields.push(UniformField {
+        wgsl.dab_fields.push(DabField {
             name: field_name.clone(),
             ty: WgslType::Vec4,
             pack: Arc::new(move |outputs, bytes| {
@@ -63,7 +68,7 @@ impl BrushNodeEvaluator for PaintColorEvaluator {
             }),
         });
         wgsl.outputs
-            .insert("color".into(), format!("u.{}", field_name));
+            .insert("color".into(), format!("d.{}", field_name));
         Ok(wgsl)
     }
 }

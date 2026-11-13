@@ -574,7 +574,10 @@ change redraws it from its raw events with the brush as it now is, through
 commit, which composites over the pre-stroke snapshot across the whole layer,
 so the previous rendering needs no erase. The redraw keeps the stroke's seed,
 view scale and rotation, so it reproduces the stroke when nothing changed;
-it re-runs the stabilizer, so a stabilizer change reshapes the stroke.
+it re-runs the stabilizer, so a stabilizer change reshapes the stroke. An
+event the host sent with its own colour (`cr`, `cg`, `cb`, `ca` on
+`StrokeOp::BrushStroke`) keeps it through every redraw; only the uncoloured
+events take the new foreground colour.
 
 Entering stroke edit first captures the layer's pixels over the stroke's
 footprint tiles, held the way an undo entry holds them (`StrokeRevert`).
