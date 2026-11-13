@@ -106,3 +106,30 @@ fn requested_jitter_matches_the_prefs_and_replays() {
     assert_same("jitter cleared", "plain", plain_px, "cleared", cleared_px);
     assert_ne!(request_px.0, paint(&mut plain).0, "the jitter moved the colour");
 }
+
+/// With its seed pinned, a Sponge stroke rendered over several frames (a
+/// live stroke) lands as the same stroke rendered whole at pen-up (a
+/// replay) does.
+#[test]
+fn a_seeded_sponge_stroke_lands_the_same_live_and_whole() {
+    let ops = line();
+    let mut whole = new_engine(CANVAS, "Sponge", 0.18);
+    set_input(&mut whole, "brush_settings", "size", 0.1);
+    whole.set_stroke_seed(Some(9));
+    let whole_px = paint(&mut whole);
+
+    let mut live = new_engine(CANVAS, "Sponge", 0.18);
+    set_input(&mut live, "brush_settings", "size", 0.1);
+    live.set_stroke_seed(Some(9));
+    let layer = live.add_raster_layer(None);
+    live.begin_stroke(layer).unwrap();
+    for (i, op) in ops.iter().enumerate() {
+        live.stroke_to(*op);
+        if i % 3 == 2 {
+            live.render(i as f32 * 0.016);
+        }
+    }
+    live.end_stroke();
+    let live_px = readback(&mut live, layer);
+    assert_same("sponge grouping", "whole", whole_px, "live", live_px);
+}
