@@ -43,10 +43,6 @@ fn paint_short_stroke(engine: &mut DarklyEngine, layer_id: darkly::layer::LayerI
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: step as f64 * 16.0,
-            cr: None,
-            cg: None,
-            cb: None,
-            ca: None,
         });
     }
     engine.end_stroke();
@@ -244,10 +240,6 @@ fn brush_stroke_queues_thumbnail_readback_only_at_end() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: step as f64 * 16.0,
-            cr: None,
-            cg: None,
-            cb: None,
-            ca: None,
         });
         engine.render(step as f32 * 0.016);
         engine.test_flush_readbacks();

@@ -34,10 +34,6 @@ fn stroke_at(engine: &mut DarklyEngine, layer_id: LayerId, x: f32, y: f32) {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
-        cr: None,
-        cg: None,
-        cb: None,
-        ca: None,
     });
     engine.end_stroke();
 }
@@ -241,10 +237,6 @@ fn no_capture_while_stroke_active() {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: 0.0,
-        cr: None,
-        cg: None,
-        cb: None,
-        ca: None,
     });
     for _ in 0..4 {
         step(&mut engine, 0.0);

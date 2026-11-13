@@ -69,10 +69,6 @@ pub fn event(x: f32, y: f32, t: f64) -> StrokeOp {
         rotation: 0.0,
         tangential_pressure: 0.0,
         time_ms: t,
-        cr: None,
-        cg: None,
-        cb: None,
-        ca: None,
     }
 }
 
@@ -136,25 +132,8 @@ pub fn assert_same(
     bounds
 }
 
-/// [`event`] carrying its own colour.
-pub fn colored_event(x: f32, y: f32, t: f64, rgba: [f32; 4]) -> StrokeOp {
-    StrokeOp::BrushStroke {
-        x,
-        y,
-        pressure: 1.0,
-        x_tilt: 0.0,
-        y_tilt: 0.0,
-        rotation: 0.0,
-        tangential_pressure: 0.0,
-        time_ms: t,
-        cr: Some(rgba[0]),
-        cg: Some(rgba[1]),
-        cb: Some(rgba[2]),
-        ca: Some(rgba[3]),
-    }
-}
-
 /// The pixel at canvas `(x, y)` of a [`readback`].
+#[allow(dead_code)]
 pub fn pixel_at((pixels, bounds): &(Vec<u8>, CanvasRect), x: i32, y: i32) -> [u8; 4] {
     let col = (x - bounds.origin.x) as u32;
     let row = (y - bounds.origin.y) as u32;

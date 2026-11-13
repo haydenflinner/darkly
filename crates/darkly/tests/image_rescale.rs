@@ -46,10 +46,6 @@ fn paint_feature(engine: &mut DarklyEngine, layer_id: LayerId, cx: f32, cy: f32)
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: i as f64 * 16.0,
-            cr: None,
-            cg: None,
-            cb: None,
-            ca: None,
         });
     }
     engine.end_stroke();
@@ -285,10 +281,6 @@ fn paint_row(engine: &mut DarklyEngine, layer_id: LayerId, py: f32, x0: f32, x1:
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: i as f64 * 16.0,
-            cr: None,
-            cg: None,
-            cb: None,
-            ca: None,
         });
     }
     engine.end_stroke();
@@ -389,10 +381,6 @@ fn paint_lands_at_plane_coords_after_rescale() {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: i as f64 * 16.0,
-            cr: None,
-            cg: None,
-            cb: None,
-            ca: None,
         });
     }
     engine.end_stroke();

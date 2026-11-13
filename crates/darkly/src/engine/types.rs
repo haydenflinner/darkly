@@ -521,17 +521,6 @@ pub enum StrokeOp {
         a1: u8,
     },
     /// Node-graph brush stroke event with full tablet data.
-    ///
-    /// `cr`, `cg`, `cb`, `ca` give the point its own colour (straight sRGB
-    /// RGBA in `0..=1`, as `set_foreground_color` takes it): the point has
-    /// one when `cr`, `cg` and `cb` are all present, and `ca` defaults to
-    /// opaque. Dabs between two points take the colour interpolated
-    /// between theirs, the way position and pressure interpolate. A point
-    /// with no colour paints in the stroke's foreground colour, colour
-    /// jitter included, so a stroke whose points carry none paints exactly
-    /// as the foreground colour alone would, and a stroke that mixes the
-    /// two blends between each point's colour and the foreground colour.
-    /// A point's own colour is used as sent, without the jitter.
     BrushStroke {
         x: f32,
         y: f32,
@@ -541,31 +530,7 @@ pub enum StrokeOp {
         rotation: f32,
         tangential_pressure: f32,
         time_ms: f64,
-        #[serde(default)]
-        #[cfg_attr(feature = "ts-export", ts(optional))]
-        cr: Option<f32>,
-        #[serde(default)]
-        #[cfg_attr(feature = "ts-export", ts(optional))]
-        cg: Option<f32>,
-        #[serde(default)]
-        #[cfg_attr(feature = "ts-export", ts(optional))]
-        cb: Option<f32>,
-        #[serde(default)]
-        #[cfg_attr(feature = "ts-export", ts(optional))]
-        ca: Option<f32>,
     },
-}
-
-/// The colour a [`StrokeOp::BrushStroke`] point carries from its `cr`, `cg`,
-/// `cb`, `ca` fields: `Some` when the three colour channels are all
-/// present, with alpha defaulting to opaque.
-pub(crate) fn point_color(
-    cr: Option<f32>,
-    cg: Option<f32>,
-    cb: Option<f32>,
-    ca: Option<f32>,
-) -> Option<[f32; 4]> {
-    Some([cr?, cg?, cb?, ca.unwrap_or(1.0)])
 }
 
 impl StrokeOp {
@@ -839,33 +804,6 @@ mod tests {
         assert!(plain.get("visible_when").is_none());
     }
 
-    /// A host that sends no point colour still deserializes, and gets none;
-    /// the three colour channels give the point one, alpha defaulting to
-    /// opaque.
-    #[test]
-    fn brush_stroke_point_colour_is_optional_on_the_wire() {
-        let colour_of = |v: serde_json::Value| match serde_json::from_value(v).unwrap() {
-            StrokeOp::BrushStroke { cr, cg, cb, ca, .. } => point_color(cr, cg, cb, ca),
-            _ => panic!("expected a brush stroke"),
-        };
-        let bare = serde_json::json!({
-            "op": "brush_stroke", "x": 1.0, "y": 2.0, "pressure": 1.0, "x_tilt": 0.0,
-            "y_tilt": 0.0, "rotation": 0.0, "tangential_pressure": 0.0, "time_ms": 0.0,
-        });
-        assert_eq!(colour_of(bare.clone()), None);
-        let mut rgb = bare.clone();
-        rgb["cr"] = 0.25.into();
-        rgb["cg"] = 0.5.into();
-        rgb["cb"] = 0.75.into();
-        assert_eq!(colour_of(rgb.clone()), Some([0.25, 0.5, 0.75, 1.0]));
-        let mut rgba = rgb.clone();
-        rgba["ca"] = 0.5.into();
-        assert_eq!(colour_of(rgba), Some([0.25, 0.5, 0.75, 0.5]));
-        let mut partial = bare;
-        partial["cr"] = 1.0.into();
-        assert_eq!(colour_of(partial), None, "a lone channel is no colour");
-    }
-
     fn brush_at(x: f32, y: f32) -> StrokeOp {
         StrokeOp::BrushStroke {
             x,
@@ -876,10 +814,6 @@ mod tests {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: 0.0,
-            cr: None,
-            cg: None,
-            cb: None,
-            ca: None,
         }
     }
 

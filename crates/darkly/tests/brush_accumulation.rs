@@ -122,10 +122,6 @@ fn stroke_centreline(engine: &mut DarklyEngine, layer: LayerId, pressure: f32, p
                 rotation: 0.0,
                 tangential_pressure: 0.0,
                 time_ms: t,
-                cr: None,
-                cg: None,
-                cb: None,
-                ca: None,
             });
             t += 16.0;
         }
@@ -431,10 +427,6 @@ fn wash_saturates_per_pigment_not_globally() {
                 rotation: 0.0,
                 tangential_pressure: 0.0,
                 time_ms: i as f64 * 16.0,
-                cr: None,
-                cg: None,
-                cb: None,
-                ca: None,
             });
         }
         engine.end_stroke();
@@ -833,10 +825,6 @@ fn the_top_of_the_dial_stacks_dabs_by_source_over() {
                 rotation: 0.0,
                 tangential_pressure: 0.0,
                 time_ms: i as f64 * 16.0,
-                cr: None,
-                cg: None,
-                cb: None,
-                ca: None,
             });
         }
         engine.end_stroke();

@@ -548,9 +548,8 @@ pub struct BrushGraphRunner {
     /// the plan or doing any lookups; this is the hottest path (called
     /// once per dab, potentially hundreds of times per stroke).
     pen_input_slots: Vec<(String, usize)>,
-    /// Pre-resolved slot index for paint_color's output, seeded per dab
-    /// with the dab's colour.  Same rationale as `pen_input_slots`: avoid
-    /// plan traversal on the hot path.
+    /// Pre-resolved slot index for paint_color's output.  Same rationale
+    /// as `pen_input_slots`: avoid plan traversal on the hot path.
     paint_color_slot: Option<usize>,
     /// Pre-resolved slot index of `brush_settings.size`'s source output.
     /// Seeded per dab in `seed_sensors` with the base size projected to
@@ -567,8 +566,8 @@ pub struct BrushGraphRunner {
     /// Node id of the (first) `clone_source` node, resolved at build.
     /// When set alongside [`Self::clone_state`], `build_slot_outputs`
     /// injects the stroke's anchor uniforms under this node's keys so the
-    /// compiled terminal packs them: the uniform packer's channel, seeded
-    /// from engine session state rather than a graph output.
+    /// compiled terminal packs them; same channel `paint_color` uses,
+    /// but seeded from engine session state rather than a graph output.
     clone_source_node: Option<NodeId>,
     /// Clone anchors for the current stroke, set via
     /// [`Self::set_clone_state`]. `None` for non-clone brushes.
@@ -923,7 +922,8 @@ impl BrushGraphRunner {
         // (`n{id}_source_anchor`, `n{id}_dest_anchor`, `n{id}_source_offset`,
         // `n{id}_source_size`) so the terminal's uniform packer picks them
         // up. These aren't graph output slots; they're stroke-constant
-        // engine session state.
+        // engine session state, seeded the same way `paint_color` seeds
+        // its color uniform.
         if let (Some(node), Some(cs)) = (self.clone_source_node.as_ref(), self.clone_state) {
             out.insert(
                 format!("n{}_source_anchor", node.0),
@@ -948,8 +948,7 @@ impl BrushGraphRunner {
     /// Seed sensor output slots directly from pen data.
     ///
     /// This is the hot path: no virtual dispatch, just memcpy into
-    /// pre-known slot indices.  `color` is the dab's colour, which
-    /// `paint_color` outputs.  `stroke_seed` and `dab_index` are stored
+    /// pre-known slot indices.  `stroke_seed` and `dab_index` are stored
     /// for random nodes to read during evaluation.
     pub fn seed_sensors(
         &mut self,

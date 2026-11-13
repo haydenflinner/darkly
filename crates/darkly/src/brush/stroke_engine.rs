@@ -214,8 +214,7 @@ impl StrokeEngine {
     /// Create a new stroke engine.
     ///
     /// `runner` is a pre-compiled brush graph.  `color` is the foreground
-    /// color (raw sRGB RGBA, as picked), which every event that carries no
-    /// colour of its own paints in.  `spacing` controls dab placement.
+    /// color (raw sRGB RGBA, as picked).  `spacing` controls dab placement.
     /// `stabilizer` is the stroke stabilization algorithm.  `stamp_angle_rate`
     /// caps how fast the stamp pivots to follow the stroke, in radians per
     /// brush diameter of travel.  `stroke_seed` drives every `random` node in
@@ -350,19 +349,10 @@ impl StrokeEngine {
     }
 
     /// Hand the stabilizer every event recorded since it last ran, as one
-    /// batch, each with its colour resolved: its own when the host sent
-    /// one, else the stroke's. The record keeps the raw events, so a redraw
-    /// resolves the uncoloured ones against the colour it is given.
+    /// batch.
     fn stabilize_pending(&mut self) {
-        let stroke_color = self.record.color;
-        let pending: Vec<PaintInformation> = self.record.events[self.stabilized_events..]
-            .iter()
-            .map(|e| PaintInformation {
-                color: Some(e.color.unwrap_or(stroke_color)),
-                ..*e
-            })
-            .collect();
-        self.stabilizer.push_all(&pending);
+        self.stabilizer
+            .push_all(&self.record.events[self.stabilized_events..]);
         self.stabilized_events = self.record.events.len();
     }
 
@@ -635,7 +625,7 @@ impl StrokeEngine {
         self.runner.clear_slots();
         self.runner.seed_sensors(
             &dab_info,
-            dab_info.color.unwrap_or(self.record.color),
+            self.record.color,
             self.stroke_seed,
             self.dab_count,
         );

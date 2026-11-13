@@ -35,10 +35,6 @@ fn paint_red(engine: &mut DarklyEngine, layer: LayerId) {
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: i as f64 * 16.0,
-            cr: None,
-            cg: None,
-            cb: None,
-            ca: None,
         });
     }
     engine.end_stroke();

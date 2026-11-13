@@ -222,10 +222,6 @@ fn stroke_row(engine: &mut DarklyEngine, layer: LayerId, y: f32, x0: f32, x1: f3
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: i as f64 * 16.0,
-            cr: None,
-            cg: None,
-            cb: None,
-            ca: None,
         });
     }
     engine.end_stroke();
@@ -458,10 +454,6 @@ fn stroke_col(engine: &mut DarklyEngine, layer: LayerId, x: f32, y0: f32, y1: f3
             rotation: 0.0,
             tangential_pressure: 0.0,
             time_ms: i as f64 * 16.0,
-            cr: None,
-            cg: None,
-            cb: None,
-            ca: None,
         });
     }
     engine.end_stroke();
