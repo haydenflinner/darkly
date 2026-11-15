@@ -57,6 +57,8 @@ parley = "0.12"
 # (dyn-any/reqwest off, image codecs to png+jpeg, wgpu strict_asserts off).
 # `rendering` pulls text-nodes/brush-types/graphene-resource transitively; only
 # the listed crates are named directly.
+# (default-features must stay on: `rendering` derives serde unconditionally
+# at renderer.rs RenderParams — the feature flag is a lie upstream.)
 core-types = { git = "https://github.com/haydenflinner/Graphite", rev = "b88857fda1ddc06d9ac64cd17a85d2fc477f78e3" }
 vector-types = { git = "https://github.com/haydenflinner/Graphite", rev = "b88857fda1ddc06d9ac64cd17a85d2fc477f78e3" }
 graphic-types = { git = "https://github.com/haydenflinner/Graphite", rev = "b88857fda1ddc06d9ac64cd17a85d2fc477f78e3" }
