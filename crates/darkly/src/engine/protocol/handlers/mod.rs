@@ -19,6 +19,7 @@ pub mod recording;
 pub mod selection;
 pub mod spline;
 pub mod text;
+pub mod vector_scene;
 pub mod view;
 
 use crate::engine::protocol::RequestRegistration;
@@ -43,6 +44,7 @@ pub fn registrations() -> Vec<RequestRegistration> {
     all.extend(selection::registrations());
     all.extend(spline::registrations());
     all.extend(text::registrations());
+    all.extend(vector_scene::registrations());
     all.extend(view::registrations());
     all
 }

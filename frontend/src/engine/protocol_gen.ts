@@ -1128,6 +1128,8 @@ variations?: { [key in string]: number }, features?: { [key in string]: number }
 
 export type SetVectorObjectsReq = { id: number, objects: Array<VectorObjectSpec>, };
 
+export type SetVectorSceneReq = { id: number, };
+
 export type SetViewTransformReq = { pan_x: number, pan_y: number, zoom: number, rotation: number, mirror_h: boolean, screen_w: number, screen_h: number, dpr: number, };
 
 export type SetViewportBgReq = { bg: [number, number, number, number], };
@@ -1419,6 +1421,7 @@ export type RequestKind =
     | 'set_text_content'
     | 'set_text_style'
     | 'set_vector_objects'
+    | 'set_vector_scene'
     | 'set_view_transform'
     | 'set_viewport_bg'
     | 'set_void_params'
@@ -1650,6 +1653,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'set_text_content',
     'set_text_style',
     'set_vector_objects',
+    'set_vector_scene',
     'set_view_transform',
     'set_viewport_bg',
     'set_void_params',
@@ -1889,6 +1893,7 @@ export interface EngineApi {
     setTextContent(req: SetTextContentReq): void;
     setTextStyle(req: SetTextStyleReq): void;
     setVectorObjects(req: SetVectorObjectsReq): Promise<{ ids: number[] }>;
+    setVectorScene(req: SetVectorSceneReq, bytes: Uint8Array): Promise<{ ok: true }>;
     setViewTransform(req: SetViewTransformReq): void;
     setViewportBg(req: SetViewportBgReq): void;
     setVoidParams(req: SetVoidParamsReq): void;
@@ -2122,6 +2127,7 @@ export function makeApi(t: Transport): EngineApi {
         setTextContent: (req) => t.postFF('set_text_content', req),
         setTextStyle: (req) => t.postFF('set_text_style', req),
         setVectorObjects: (req) => t.request('set_vector_objects', req),
+        setVectorScene: (req, bytes) => t.request('set_vector_scene', req, bytes),
         setViewTransform: (req) => t.postFF('set_view_transform', req),
         setViewportBg: (req) => t.postFF('set_viewport_bg', req),
         setVoidParams: (req) => t.postFF('set_void_params', req),

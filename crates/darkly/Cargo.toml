@@ -60,6 +60,7 @@ indexmap = { version = "2", features = ["serde"] }
 # vocabulary directly (objects persist via their `serde` features); parley
 # shapes text into glyph runs; vello realizes both into the layer texture.
 vello = { workspace = true }
+vello_encoding = { workspace = true }
 kurbo = { workspace = true }
 peniko = { workspace = true }
 parley = { workspace = true }
