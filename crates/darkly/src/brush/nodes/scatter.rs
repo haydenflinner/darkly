@@ -58,7 +58,7 @@ pub fn register() -> BrushNodeRegistration {
                     .with_description(
                         "Both: independent x/y offsets. X Only/Y Only: one offset along the direction or its normal",
                     ),
-                PortDef::output("position", BrushWireType::Vec2).with_description(
+                PortDef::output("output", BrushWireType::Vec2).with_description(
                     "The dab position after the random offset (wire to Paint -> Position)",
                 ),
             ],
@@ -105,7 +105,7 @@ impl BrushNodeEvaluator for ScatterEvaluator {
         let axes = ctx.input("axes").as_f32() as i32;
         let i = ctx.dab_index;
         let pos = scattered(pos, spread, dir, axes, |k| ctx.prng_at(i * 2 + k));
-        vec![("position".into(), ScalarValue::Vec2(pos))]
+        vec![("output".into(), ScalarValue::Vec2(pos))]
     }
 
     /// The scattered position is a per-dab record field, packed like
@@ -113,8 +113,8 @@ impl BrushNodeEvaluator for ScatterEvaluator {
     /// constant.
     fn compile_wgsl(&self, cctx: &CompileWgslCtx) -> Result<NodeWgsl, String> {
         let mut wgsl = NodeWgsl::default();
-        if cctx.consumed_outputs.contains("position") {
-            let field_name = cctx.dab_field_name("position");
+        if cctx.consumed_outputs.contains("output") {
+            let field_name = cctx.dab_field_name("output");
             let key = field_name.clone();
             wgsl.dab_fields.push(DabField {
                 name: field_name.clone(),
@@ -125,7 +125,7 @@ impl BrushNodeEvaluator for ScatterEvaluator {
                 }),
             });
             wgsl.outputs
-                .insert("position".into(), format!("d.{}", field_name));
+                .insert("output".into(), format!("d.{}", field_name));
         }
         Ok(wgsl)
     }
