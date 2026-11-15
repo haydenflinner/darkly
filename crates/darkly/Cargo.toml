@@ -12,8 +12,13 @@ keywords = ["paint", "gpu", "webgpu", "graphics", "wgpu"]
 categories = ["graphics", "rendering", "wasm"]
 
 [features]
-default = ["bundled-assets"]
+default = ["bundled-assets", "krita-import"]
 profile = []
+# Krita `.kpp` brush-preset import: the `brush::import` parsers and their
+# `quick-xml` dependency. The editor's brush inspector uses it; a host that
+# only paints (never imports foreign presets) drops it with
+# `--no-default-features`.
+krita-import = ["dep:quick-xml"]
 # Embeds the curated fonts and the named brush textures (paper grain) into
 # the binary, so text and textured brushes work with no further setup. A host
 # that would rather not ship them in its wasm module turns this off and
@@ -43,7 +48,7 @@ web-time = { workspace = true }
 zip = { workspace = true }
 image = { workspace = true }
 png = { workspace = true }
-quick-xml = { workspace = true }
+quick-xml = { workspace = true, optional = true }
 base64 = { workspace = true }
 thiserror = { workspace = true }
 slotmap = { workspace = true }

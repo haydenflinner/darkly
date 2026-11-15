@@ -9,6 +9,7 @@ pub mod composite_pipeline;
 pub mod curve_math;
 pub mod eval;
 pub mod gpu_context;
+#[cfg(feature = "krita-import")]
 pub mod import;
 pub mod input_value;
 pub mod interpolation;

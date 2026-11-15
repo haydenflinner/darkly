@@ -108,6 +108,7 @@ split-debuginfo = "unpacked"
 
 [profile.release]
 lto = "thin"
+codegen-units = 1
 
 [workspace.lints.clippy]
 too_many_arguments = "allow"

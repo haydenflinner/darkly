@@ -14,10 +14,14 @@ publish = false
 crate-type = ["cdylib"]
 
 [features]
-default = ["bundled-assets"]
+default = ["bundled-assets", "krita-import"]
 profile = ["darkly/profile"]
 # See the `darkly` crate's feature of the same name.
 bundled-assets = ["darkly/bundled-assets"]
+# The `KritaInspector` bridge and the `.kpp` import parsers behind it
+# (`darkly/krita-import`). Nina never imports Krita presets, so nina's
+# `--no-default-features` build line drops both.
+krita-import = ["darkly/krita-import"]
 
 [dependencies]
 darkly = { workspace = true }

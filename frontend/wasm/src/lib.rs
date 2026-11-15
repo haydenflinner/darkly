@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 mod alloc_watch;
 pub mod api;
 pub mod config_bridge;
+#[cfg(feature = "krita-import")]
 pub mod krita_inspect;
 
 #[wasm_bindgen(start)]
