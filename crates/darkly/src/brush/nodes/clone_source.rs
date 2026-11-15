@@ -166,19 +166,24 @@ pub fn register() -> BrushNodeRegistration {
                         "Off: the source tracks the cursor (aligned). On: every dab \
                          samples the fixed source point (anchored).",
                     ),
-                // Layer (0) vs merged (1). Like `mode`, an exposed Bool
-                // toggle read from the port default; the engine resolves
-                // it at stroke start to pick the snapshot source.
+                // Layer (0) vs merged (1), on both arms: the Snapshot arm
+                // freezes the merged canvas instead of the source layer
+                // (the engine resolves it at stroke start); the Live arm
+                // smudges the merged page (the visible stack composited,
+                // plus the stroke so far) instead of the painted layer.
+                // Like `mode`, an exposed Bool toggle read from the port
+                // default and baked into the emitted WGSL.
                 PortDef::input("merged", BrushWireType::Bool)
                     .with_range(0.0, 1.0, 0.0)
                     .with_step(1.0)
                     .with_label("Sample Merged")
                     .with_icon("fa6-solid:layer-group")
-                    .with_visible_when("source", [SOURCE_SNAPSHOT])
+                    .with_visible_when("source", [SOURCE_SNAPSHOT, SOURCE_LIVE])
                     .exposed()
                     .with_description(
-                        "Off: clone from the source layer. On: clone from the merged \
-                         canvas (all layers composited).",
+                        "Off: sample the painted layer. On: sample the merged \
+                         canvas, all layers composited. Snapshot freezes it at \
+                         stroke start; Live keeps it current dab by dab.",
                     ),
                 PortDef::output("color", BrushWireType::Vec4)
                     .with_description("Straight RGBA sampled from the chosen source at the offset"),
@@ -450,16 +455,19 @@ fn compile_snapshot(cctx: &CompileWgslCtx, wgsl: &mut NodeWgsl, out: &str) {
 
 /// The Live arm: the stroke's appearance one dab behind, at
 /// `target_pos - motion`, bilinear in straight alpha. The appearance
-/// mirror is layer-sized in the paint target's frame, the frame the
-/// intrinsic header carries.
+/// mirror lives in the frame the `merged` toggle picks: layer-sized in
+/// the paint target's frame for the stroke appearance, window-sized in
+/// the canvas frame for the merged page (the stroke-start composite with
+/// the stroke's accumulations laid on it, so a finger can pick up pixels
+/// other layers own beyond the layer's edge).
 ///
 /// Filtered by hand from four texel loads rather than through
 /// `graph_smp`: the sample point is split so its integer texel comes from
-/// the pixel's layer-local texel and its fractional weight from `motion`
+/// the pixel's frame-local texel and its fractional weight from `motion`
 /// alone. The result then does not depend on the layer's frame, which the
 /// hardware filter's fixed-point weights do (a dab re-rendered after the
 /// layer grew would read a different LSB), and the taps clamp to the
-/// layer's edge, so the filter never reaches the opposite edge, whose
+/// mirror's edge, so the filter never reaches the opposite edge, whose
 /// mirror texels this dab never refreshed. The taps are premultiplied
 /// before they are mixed and the result is returned straight: the mirror
 /// is straight alpha, and mixing straight texels across a transparent
@@ -469,7 +477,26 @@ fn compile_snapshot(cctx: &CompileWgslCtx, wgsl: &mut NodeWgsl, out: &str) {
 /// shader variants, so the shared decls compile into the preview module,
 /// whose body never calls it.
 fn compile_live(cctx: &CompileWgslCtx, wgsl: &mut NodeWgsl, out: &str, coverage: &str) {
-    let slot = cctx.request_live_texture(LiveSource::StrokeAppearance);
+    // `merged` is a compile-time bake like `mode`: a wired `merged`
+    // (unusual) cannot swap the bound texture mid-stroke and falls back
+    // to the painted layer.
+    let merged = match cctx.input("merged") {
+        InputBinding::Default(v) => merged_default_is_on(v.as_f32()),
+        InputBinding::Wired(_) => false,
+    };
+    let slot = cctx.request_live_texture(if merged {
+        LiveSource::MergedAppearance
+    } else {
+        LiveSource::StrokeAppearance
+    });
+    // The intrinsic fields the mirror's frame lives in: the paint
+    // target's for the stroke appearance, the document window's for the
+    // merged page.
+    let (frame_origin, frame_size) = if merged {
+        ("canvas_origin", "canvas_size")
+    } else {
+        ("layer_offset", "layer_size")
+    };
     let live_fn = cctx.ident("clone_live");
     let dull_fn = cctx.ident("clone_dull");
     let sample_ty = cctx.ident("CloneLiveSample");
@@ -496,8 +523,8 @@ fn compile_live(cctx: &CompileWgslCtx, wgsl: &mut NodeWgsl, out: &str, coverage:
          \x20   // integers) the sample point is the pixel's texel minus motion.\n\
          \x20   let back = floor(-motion);\n\
          \x20   let w = -motion - back;\n\
-         \x20   let base = vec2<i32>(floor(tp)) - u.intrinsic.layer_offset + vec2<i32>(back);\n\
-         \x20   let size = vec2<i32>(u.intrinsic.layer_size);\n\
+         \x20   let base = vec2<i32>(floor(tp)) - u.intrinsic.{frame_origin} + vec2<i32>(back);\n\
+         \x20   let size = vec2<i32>(u.intrinsic.{frame_size});\n\
          \x20   let at = vec2<f32>(base) + w;\n\
          \x20   if (any(at < vec2<f32>(-0.5)) || any(at > vec2<f32>(size) - vec2<f32>(0.5))) {{\n\
          \x20       return none;\n\
@@ -532,8 +559,8 @@ fn compile_live(cctx: &CompileWgslCtx, wgsl: &mut NodeWgsl, out: &str, coverage:
          \x20   if (abs(motion.x) < {STATIONARY_MOTION_PX:.6} && abs(motion.y) < {STATIONARY_MOTION_PX:.6}) {{\n\
          \x20       return none;\n\
          \x20   }}\n\
-         \x20   let lo = u.intrinsic.layer_offset;\n\
-         \x20   let hi = lo + vec2<i32>(u.intrinsic.layer_size);\n\
+         \x20   let lo = u.intrinsic.{frame_origin};\n\
+         \x20   let hi = lo + vec2<i32>(u.intrinsic.{frame_size});\n\
          \x20   let half_px = max(radius / inv_radius, 0.5);\n\
          \x20   let wlo = dab_pos - motion - vec2<f32>(half_px);\n\
          \x20   let whi = dab_pos - motion + vec2<f32>(half_px);\n\
@@ -547,7 +574,7 @@ fn compile_live(cctx: &CompileWgslCtx, wgsl: &mut NodeWgsl, out: &str, coverage:
          \x20       for (var i = 0u; i < 8u; i = i + 1u) {{\n\
          \x20           let cell = (vec2<f32>(f32(i), f32(j)) + vec2<f32>(0.5)) / 8.0;\n\
          \x20           let lp = vec2<i32>(floor(mix(wlo, whi, cell))) - lo;\n\
-         \x20           if (all(lp >= vec2<i32>(0)) && all(lp < vec2<i32>(u.intrinsic.layer_size))) {{\n\
+         \x20           if (all(lp >= vec2<i32>(0)) && all(lp < vec2<i32>(u.intrinsic.{frame_size}))) {{\n\
          \x20               let c = textureLoad({tex}, lp, 0);\n\
          \x20               sum_rgb = sum_rgb + c.rgb * c.a;\n\
          \x20               sum_a = sum_a + c.a;\n\
@@ -625,13 +652,18 @@ mod tests {
             visible("motion"),
             Some(("source".to_string(), vec![SOURCE_LIVE]))
         );
-        for name in ["center", "mode", "merged"] {
+        for name in ["center", "mode"] {
             assert_eq!(
                 visible(name),
                 Some(("source".to_string(), vec![SOURCE_SNAPSHOT])),
                 "{name} belongs to the Snapshot arm"
             );
         }
+        assert_eq!(
+            visible("merged"),
+            Some(("source".to_string(), vec![SOURCE_SNAPSHOT, SOURCE_LIVE])),
+            "merged selects the sampled page on both arms"
+        );
         assert!(reg.node.ports.iter().any(|p| p.name == "color"));
         assert!(reg.node.ports.iter().any(|p| p.name == "center"));
         assert!(!reg.node.ports.iter().any(|p| p.name == "angle"));
@@ -686,11 +718,7 @@ mod tests {
     /// mirror.
     #[test]
     fn read_reach_covers_the_motion_and_the_filter_on_the_live_arm_only() {
-        let reach = |source: i32,
-                     motion: [f32; 2],
-                     dulling: f32,
-                     radius: f32,
-                     base_size: f32| {
+        let reach = |source: i32, motion: [f32; 2], dulling: f32, radius: f32, base_size: f32| {
             let ports: Vec<_> = register()
                 .node
                 .ports
@@ -720,7 +748,10 @@ mod tests {
         let smearing = |motion: [f32; 2]| reach(SOURCE_LIVE, motion, 0.0, 1.0, 1.0);
         assert_eq!(smearing([2.5, -3.0]), [4.0, 4.0]);
         assert_eq!(smearing([0.0, 0.0]), [1.0, 1.0]);
-        assert_eq!(reach(SOURCE_SNAPSHOT, [2.5, -3.0], 0.0, 1.0, 1.0), [0.0, 0.0]);
+        assert_eq!(
+            reach(SOURCE_SNAPSHOT, [2.5, -3.0], 0.0, 1.0, 1.0),
+            [0.0, 0.0]
+        );
         assert_eq!(
             reach(SOURCE_SNAPSHOT, [2.5, -3.0], 1.0, 3.0, 1.0),
             [0.0, 0.0],
@@ -734,7 +765,10 @@ mod tests {
         let dull = |radius: f32| reach(SOURCE_LIVE, [2.5, -3.0], 1.0, radius, 1.0);
         assert_eq!(dull(1.0), [4.0, 4.0]);
         assert_eq!(dull(0.0), [4.0, 4.0]);
-        assert_eq!(dull(1.5), [4.0 + (0.5 * nominal).ceil(), 4.0 + (0.5 * nominal).ceil()]);
+        assert_eq!(
+            dull(1.5),
+            [4.0 + (0.5 * nominal).ceil(), 4.0 + (0.5 * nominal).ceil()]
+        );
         // Modulated dabs shrink; the bound stays on the nominal radius.
         assert_eq!(
             reach(SOURCE_LIVE, [0.0, 0.0], 1.0, 2.0, 0.01),

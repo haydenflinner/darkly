@@ -120,7 +120,7 @@ fn render_blur_dabs(size: f32, strength: f32, opacity: f32, dabs: &[[f32; 2]]) -
 
     macro_rules! make_ctx {
         ($label:expr) => {{
-            let (scratch, pre_stroke_tex, pre_stroke_bg, source_override) =
+            let (scratch, pre_stroke_tex, pre_stroke_bg, source_override, merged_base) =
                 stroke_buffer.parts_for_brush_ctx();
             BrushGpuContext {
                 encoder: device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -149,6 +149,7 @@ fn render_blur_dabs(size: f32, strength: f32, opacity: f32, dabs: &[[f32; 2]]) -
                     pre_stroke_texture: pre_stroke_tex,
                     pre_stroke_bind_group: pre_stroke_bg,
                     source_override,
+                    merged_base_texture: merged_base,
                 }),
                 preview: None,
                 dab_batch: DabBatch::default(),

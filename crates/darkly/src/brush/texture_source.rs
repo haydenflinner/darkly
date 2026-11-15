@@ -92,6 +92,15 @@ pub enum LiveSource {
     /// that cannot order a refresh between dabs cannot host it. Requested
     /// by `clone_source`'s Live arm.
     StrokeAppearance,
+    /// The merged page as the commit would show it right now: the visible
+    /// layer stack's composite frozen at stroke start, with the stroke's
+    /// accumulations laid on it under the commit law (Krita's `MergedPaint`
+    /// overlay mode: `image->projection()` plus the stroke's own overlay).
+    /// Canvas-window-sized, in the canvas frame, so a finger can pick up
+    /// pixels other layers own beyond the painted layer's edge. Same
+    /// per-dab refresh rule as [`Self::StrokeAppearance`]. Requested by
+    /// `clone_source`'s Live arm with `merged` on.
+    MergedAppearance,
 }
 
 impl LiveSource {
@@ -99,13 +108,53 @@ impl LiveSource {
         match self {
             LiveSource::StrokeSnapshot => "stroke snapshot",
             LiveSource::StrokeAppearance => "live stroke appearance",
+            LiveSource::MergedAppearance => "live merged appearance",
         }
     }
 
     /// Whether this source holds the output of the pass that samples it
     /// and must be refreshed between consecutive dabs.
     pub fn refreshed_per_dab(&self) -> bool {
-        matches!(self, Self::StrokeAppearance)
+        matches!(self, Self::StrokeAppearance | Self::MergedAppearance)
+    }
+
+    /// The frame this source's per-dab appearance mirror is rendered in:
+    /// the plane rect its texels are anchored to. `None` for the frozen
+    /// snapshot, which has no mirror.
+    pub fn mirror_frame(&self) -> Option<AppearanceFrame> {
+        match self {
+            Self::StrokeSnapshot => None,
+            Self::StrokeAppearance => Some(AppearanceFrame::Layer),
+            Self::MergedAppearance => Some(AppearanceFrame::Canvas),
+        }
+    }
+}
+
+/// The plane rect an appearance mirror covers: the anchor that turns a
+/// mirror texel into a plane position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AppearanceFrame {
+    /// The paint target's extent: layer-sized, layer-local texels.
+    Layer,
+    /// The document's canvas window: window-sized, canvas-local texels.
+    Canvas,
+}
+
+impl AppearanceFrame {
+    /// The dimensions a mirror in this frame takes, given the layer's and
+    /// the canvas window's.
+    pub fn dims(self, layer: (u32, u32), canvas: (u32, u32)) -> (u32, u32) {
+        match self {
+            Self::Layer => layer,
+            Self::Canvas => canvas,
+        }
+    }
+
+    /// Whether a layer growth reallocates a mirror in this frame: layer
+    /// mirrors follow the write side, canvas mirrors stay anchored to a
+    /// window that cannot move mid-stroke.
+    pub fn follows_layer_growth(self) -> bool {
+        matches!(self, Self::Layer)
     }
 }
 
@@ -224,12 +273,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_stroke_appearance_is_refreshed_per_dab() {
+    fn only_the_appearances_are_refreshed_per_dab() {
         assert!(LiveSource::StrokeAppearance.refreshed_per_dab());
+        assert!(LiveSource::MergedAppearance.refreshed_per_dab());
         assert!(!LiveSource::StrokeSnapshot.refreshed_per_dab());
         assert!(ResolvedSource::Live(LiveSource::StrokeAppearance).refreshed_per_dab());
+        assert!(ResolvedSource::Live(LiveSource::MergedAppearance).refreshed_per_dab());
         assert!(!ResolvedSource::Live(LiveSource::StrokeSnapshot).refreshed_per_dab());
         assert!(!ResolvedSource::Named("paper".into()).refreshed_per_dab());
+        assert_eq!(
+            LiveSource::MergedAppearance.mirror_frame(),
+            Some(AppearanceFrame::Canvas)
+        );
+        assert_eq!(
+            LiveSource::StrokeAppearance.mirror_frame(),
+            Some(AppearanceFrame::Layer)
+        );
+        assert_eq!(LiveSource::StrokeSnapshot.mirror_frame(), None);
     }
 
     #[test]

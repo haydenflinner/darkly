@@ -76,7 +76,8 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 use crate::brush::appearance_snapshot::{
-    AppearanceSnapshotPipeline, SnapshotRecord, SnapshotSources, APPEARANCE_SNAPSHOT_ID,
+    AppearanceSnapshotPipeline, FlushSnapshots, SnapshotRecord, SnapshotSources,
+    APPEARANCE_SNAPSHOT_ID,
 };
 use crate::brush::composite_pipeline::CommitLaw;
 use crate::brush::eval::{BrushNodeEvaluator, EvalContext};
@@ -88,12 +89,13 @@ use crate::brush::pipeline::{
     BrushPipelineEntry, BrushPipelineRegistration, BuildContext, DynamicUniformRing,
 };
 use crate::brush::scratch::{ChannelUse, StrokeChannel};
-use crate::brush::texture_source::{LiveSource, ResolvedSource};
+use crate::brush::texture_source::{AppearanceFrame, LiveSource, ResolvedSource};
 use crate::brush::wgsl::{
     pack_intrinsic_uniforms, pack_uniforms, CompileWgslCtx, CompiledBrush, InputBinding, NodeWgsl,
     DAB_SLOT_STRIDE, DAB_WORKGROUP, GROUND_NAME, INTRINSIC_UNIFORMS_SIZE,
 };
 use crate::brush::wire::{BrushWireType, ScalarValue};
+use crate::coord::CanvasRect;
 use crate::nodegraph::{NodeRegistration, PortDef, UnitType};
 
 // ── Constants ───────────────────────────────────────────────────────────
@@ -194,16 +196,19 @@ const ACCUMULATE_WGSL: &str = concat!(
 );
 
 /// Per-dab meta, in lockstep with the dab records: the footprint's size
-/// (the dab's dispatch grid) and the read region (the appearance
-/// snapshot's dispatch grid and origin, write-side texels), both clamped
-/// to the layer. The read region is the footprint grown by the graph's
-/// per-dab read reach; for a graph that reads nothing beyond its
-/// footprint it equals the footprint and is never used.
+/// (the dab's dispatch grid) and the read regions (each appearance
+/// snapshot's dispatch grid and origin, in its mirror's texels): one
+/// clamped to the layer, one to the canvas window. A read region is the
+/// footprint grown by the graph's per-dab read reach; for a graph that
+/// reads nothing beyond its footprint each equals the footprint and is
+/// never used, and for a graph without the matching appearance kind the
+/// record is never read.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct PaintDabMeta {
     grid: [u32; 2],
     read: SnapshotRecord,
+    read_merged: SnapshotRecord,
 }
 
 /// How much of each dab goes to each half, from the `buildup` dial.
@@ -750,18 +755,35 @@ impl BrushNodeEvaluator for PaintEvaluator {
         else {
             return vec![("dab_size".into(), ScalarValue::Vec2([diameter, diameter]))];
         };
-        // The read region: the footprint grown by what the graph reads
-        // beyond it this dab, under the same clamp, in write-side texels.
+        // The read regions: the footprint grown by what the graph reads
+        // beyond it this dab, in each appearance mirror's texels — one
+        // clamped to the layer, one to the canvas window (the merged
+        // mirror's frame; a dab off-canvas reads an empty merged region,
+        // a zero-size record the snapshot dispatches as a no-op).
         let extent = paint_target.canvas_extent();
         let reach = gpu.dab_batch.read_reach;
+        let read_plane = [
+            position[0] - bbox_radius - reach[0],
+            position[1] - bbox_radius - reach[1],
+            position[0] + bbox_radius + reach[0],
+            position[1] + bbox_radius + reach[1],
+        ];
         let read = extent
-            .clamp_f32(
-                position[0] - bbox_radius - reach[0],
-                position[1] - bbox_radius - reach[1],
-                position[0] + bbox_radius + reach[0],
-                position[1] + bbox_radius + reach[1],
-            )
+            .clamp_f32(read_plane[0], read_plane[1], read_plane[2], read_plane[3])
             .expect("the read region encloses a footprint that overlaps the layer");
+        let canvas = CanvasRect::from_xywh(
+            gpu.canvas_origin[0],
+            gpu.canvas_origin[1],
+            gpu.canvas_width,
+            gpu.canvas_height,
+        );
+        let read_merged = canvas
+            .clamp_f32(read_plane[0], read_plane[1], read_plane[2], read_plane[3])
+            .map(|r| SnapshotRecord {
+                origin: [(r.x0() - canvas.x0()) as u32, (r.y0() - canvas.y0()) as u32],
+                size: [r.width, r.height],
+            })
+            .unwrap_or_default();
         gpu.dab_batch
             .meta_bytes
             .extend_from_slice(bytemuck::bytes_of(&PaintDabMeta {
@@ -773,6 +795,7 @@ impl BrushNodeEvaluator for PaintEvaluator {
                     ],
                     size: [read.width, read.height],
                 },
+                read_merged,
             }));
 
         gpu.dab_batch
@@ -839,40 +862,71 @@ impl BrushNodeEvaluator for PaintEvaluator {
             .expect("paint::flush_dabs requires dab_batch.slot_outputs");
         pack_uniforms(&compiled, outputs, &mut uniform_bytes);
 
-        // The appearance snapshot, for a graph that samples the live
-        // stroke: its records, its flags from the same slot mapping the
-        // commit uses, and the mirror it writes. Group 1 per flush, since a
-        // grow reallocates every view in it.
-        let pre_stroke_view = stroke
-            .pre_stroke_texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        // The appearance snapshots, one per refreshed live source the
+        // graph samples: the read records in each mirror's frame, the
+        // flags from the same slot mapping the commit uses, the grounds
+        // mapped into the mirror's frame, and the mirror each writes.
+        // Group 1 per flush, since a grow reallocates every view in it.
         let snapshot = gpu
             .pipelines
             .get::<AppearanceSnapshotPipeline>(APPEARANCE_SNAPSHOT_ID);
         let law = PaintLaw::of(ctx);
-        let snapshots = compiled.reads_stroke_appearance().then(|| {
-            let (wash, build) = law.slots(scratch.write_view(), |name| {
-                scratch
-                    .channel_view(name)
-                    .expect("a brush declares the channel its law accumulates into")
-            });
-            let records: Vec<SnapshotRecord> = metas.iter().map(|m| m.read).collect();
-            snapshot.begin_flush(
-                gpu.device,
-                gpu.queue,
-                &pipeline_ref.index_buffer,
-                &records,
-                SnapshotSources {
-                    wash,
-                    build,
-                    law: law.commit_law(),
-                    pre_stroke: &pre_stroke_view,
-                    appearance: scratch
-                        .appearance_view()
-                        .expect("begin_stroke allocates the mirror for a brush that reads it"),
-                },
-            )
-        });
+        let mut snapshot_kinds: Vec<LiveSource> = Vec::new();
+        for source in &compiled.graph_sources {
+            if let ResolvedSource::Live(kind) = source {
+                if kind.mirror_frame().is_some() && !snapshot_kinds.contains(kind) {
+                    snapshot_kinds.push(*kind);
+                }
+            }
+        }
+        let snapshots: Vec<FlushSnapshots> = snapshot_kinds
+            .iter()
+            .map(|kind| {
+                let (wash, build) = law.slots(scratch.write_view(), |name| {
+                    scratch
+                        .channel_view(name)
+                        .expect("a brush declares the channel its law accumulates into")
+                });
+                // The grounds are layer-framed; `kind`'s frame picks the
+                // base they are laid onto, how they map into its mirror,
+                // and which read records the flush uploads.
+                let (base_tex, ground_origin, records) = match kind.mirror_frame() {
+                    Some(AppearanceFrame::Canvas) => (
+                        stroke.merged_base_texture.expect(
+                            "begin_stroke captures the merged base for a brush that reads it",
+                        ),
+                        [
+                            canvas_ext.x0() - gpu.canvas_origin[0],
+                            canvas_ext.y0() - gpu.canvas_origin[1],
+                        ],
+                        metas.iter().map(|m| m.read_merged).collect::<Vec<_>>(),
+                    ),
+                    _ => (
+                        stroke.pre_stroke_texture,
+                        [0, 0],
+                        metas.iter().map(|m| m.read).collect(),
+                    ),
+                };
+                let base = base_tex.create_view(&wgpu::TextureViewDescriptor::default());
+                snapshot.begin_flush(
+                    gpu.device,
+                    gpu.queue,
+                    &pipeline_ref.index_buffer,
+                    &records,
+                    SnapshotSources {
+                        wash,
+                        build,
+                        law: law.commit_law(),
+                        ground_origin,
+                        ground_size: layer_size,
+                        base: &base,
+                        appearance: scratch
+                            .appearance_view(*kind)
+                            .expect("begin_stroke allocates the mirror for a brush that reads it"),
+                    },
+                )
+            })
+            .collect();
 
         // `@group(3)` for graphs with a live slot: rebuilt here each flush
         // from the stroke textures this terminal publishes. Both are stroke
@@ -885,9 +939,14 @@ impl BrushNodeEvaluator for PaintEvaluator {
                 .create_view(&wgpu::TextureViewDescriptor::default());
             gpu.dab_batch
                 .publish_live_texture(LiveSource::StrokeSnapshot, source);
-            if let Some(view) = scratch.appearance_view() {
-                gpu.dab_batch
-                    .publish_live_texture(LiveSource::StrokeAppearance, view.clone());
+            // Every mirror the snapshots refreshed this flush is current;
+            // publish each the graph requests. An unrequested slot stays
+            // unpublished and binds `_fallback`.
+            for kind in &snapshot_kinds {
+                let view = scratch
+                    .appearance_view(*kind)
+                    .expect("begin_stroke allocates the mirror for a brush that reads it");
+                gpu.dab_batch.publish_live_texture(*kind, view.clone());
             }
             let published: Vec<Option<&wgpu::TextureView>> = compiled
                 .graph_sources
@@ -963,13 +1022,15 @@ impl BrushNodeEvaluator for PaintEvaluator {
             // a dab's snapshot sees every earlier dab and the dab sees its
             // snapshot.
             for (i, meta) in metas.iter().enumerate() {
-                if let Some(flush) = &snapshots {
-                    // Its own pipeline and group 1. Group 0 is an equal
-                    // layout entry in both pipelines, so it stays bound
-                    // across the switch; groups 2 and 3 lie outside the
-                    // snapshot's layout and are still bound when the brush
-                    // pipeline returns.
-                    snapshot.dispatch(&mut pass, flush, i as u32);
+                if !snapshots.is_empty() {
+                    // Each kind's own group 1 on the one snapshot pipeline.
+                    // Group 0 is an equal layout entry in both pipelines, so
+                    // it stays bound across the switch; groups 2 and 3 lie
+                    // outside the snapshot's layout and are still bound when
+                    // the brush pipeline returns.
+                    for flush in &snapshots {
+                        snapshot.dispatch(&mut pass, flush, i as u32);
+                    }
                     pass.set_pipeline(&per_brush.pipeline);
                 }
                 let groups = |px: u32| px.div_ceil(DAB_WORKGROUP).max(1);
@@ -979,8 +1040,8 @@ impl BrushNodeEvaluator for PaintEvaluator {
         });
 
         gpu.perf.record_dab_flush(total_dabs);
-        let per_dab = if snapshots.is_some() { 2 } else { 1 };
-        gpu.perf.record_dispatches(per_dab * total_dabs);
+        gpu.perf
+            .record_dispatches((1 + snapshots.len() as u32) * total_dabs);
     }
 
     fn commit(&self, ctx: &EvalContext, gpu: &mut BrushGpuContext) {

@@ -64,6 +64,16 @@ pub struct StrokeBuffer {
     /// brush doesn't sample one at all. See [`SourceSnapshot`].
     source_snapshot: Option<SourceSnapshot>,
 
+    /// The merged page composite frozen at stroke start, when the brush
+    /// samples the merged live appearance (`clone_source` Live + merged):
+    /// the background of the canvas-framed appearance mirror, so a merged
+    /// smudge reads the whole visible stack instead of the painted layer.
+    /// Held beside `source_snapshot` rather than aliased to it: a graph
+    /// could host both a merged live sampler and a differently-pinned
+    /// snapshot sampler. Canvas-window-sized, RGBA8, like the source
+    /// snapshot's merged arm produces.
+    merged_base: Option<wgpu::Texture>,
+
     /// How the stroke's terminal dispatches dabs; with the scratch's format,
     /// what decides whether a scratch suits a given brush.
     dab_pass: DabPass,
@@ -143,6 +153,7 @@ impl StrokeBuffer {
             pre_stroke_view,
             pre_stroke_bind_group,
             source_snapshot: None,
+            merged_base: None,
             dab_pass,
             width,
             height,
@@ -199,10 +210,10 @@ impl StrokeBuffer {
 
     /// Split-borrow accessor for `BrushGpuContext` construction: returns
     /// a mutable reference to the scratch alongside immutable references
-    /// to the pre-stroke resources and the optional source snapshot, all
-    /// from one `&mut self` borrow.  The borrow checker permits this
-    /// because the function body proves the borrows are disjoint
-    /// (different fields).
+    /// to the pre-stroke resources, the optional source snapshot, and the
+    /// optional merged-appearance base, all from one `&mut self` borrow.
+    /// The borrow checker permits this because the function body proves
+    /// the borrows are disjoint (different fields).
     pub fn parts_for_brush_ctx(
         &mut self,
     ) -> (
@@ -210,12 +221,14 @@ impl StrokeBuffer {
         &wgpu::Texture,
         &wgpu::BindGroup,
         Option<&wgpu::Texture>,
+        Option<&wgpu::Texture>,
     ) {
         (
             &mut self.scratch,
             &self.pre_stroke_texture,
             &self.pre_stroke_bind_group,
             self.source_snapshot.as_ref().map(|cs| &cs.texture),
+            self.merged_base.as_ref(),
         )
     }
 
@@ -364,35 +377,26 @@ impl StrokeBuffer {
         brush_pipelines: &BrushPipelines,
         source: &crate::gpu::paint_target::GpuPaintTarget<'_>,
     ) {
-        use crate::brush::paint_target_ext::BrushPaintTargetExt;
-        let extent = source.layer_extent();
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("stroke-source-snapshot"),
-            size: wgpu::Extent3d {
-                width: extent.width,
-                height: extent.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            // RENDER_ATTACHMENT for the R8-mask broadcast pass, COPY_DST
-            // for the same-format hardware copy; mirrors the pre-stroke
-            // snapshot's dual capture path.
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        // The view only serves the R8-broadcast capture pass; sampling at
-        // flush time creates its own binding view from the texture.
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        source.save_pre_stroke_snapshot(device, encoder, brush_pipelines, &view, &texture);
         self.source_snapshot = Some(SourceSnapshot {
-            texture,
+            texture: freeze_source(device, encoder, brush_pipelines, source),
             frame: source.canvas_extent(),
         });
+    }
+
+    /// Freeze `source` (the root composite) into the merged-appearance
+    /// base: the canvas-framed background the merged mirror lays the
+    /// stroke's accumulations on. Same capture as
+    /// [`Self::save_source_snapshot`]; the mirror's frame is the document
+    /// canvas window, which the stroke context already carries, so only
+    /// the texture is kept.
+    pub fn save_merged_base(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        brush_pipelines: &BrushPipelines,
+        source: &crate::gpu::paint_target::GpuPaintTarget<'_>,
+    ) {
+        self.merged_base = Some(freeze_source(device, encoder, brush_pipelines, source));
     }
 
     /// Plane-space frame of the frozen source snapshot, if one was
@@ -403,10 +407,11 @@ impl StrokeBuffer {
         self.source_snapshot.as_ref().map(|cs| cs.frame)
     }
 
-    /// Drop the frozen source snapshot, so the pre-stroke snapshot fills the
-    /// sampled source slot again.
-    pub fn clear_source_snapshot(&mut self) {
+    /// Drop the stroke's frozen sources, so the pre-stroke snapshot fills
+    /// the sampled source slot again and a merged appearance has no base.
+    pub fn clear_frozen_sources(&mut self) {
         self.source_snapshot = None;
+        self.merged_base = None;
     }
 
     /// Current scratch dimensions in pixels (the write side, which is layer-sized).
@@ -426,8 +431,9 @@ impl StrokeBuffer {
     /// The next `Scratch::sync_read_mirror` call will re-copy in the new
     /// write-side coordinate frame.
     ///
-    /// `source_snapshot` is also left alone: it lives in the *sampled*
-    /// texture's frozen frame, and destination growth doesn't move it.
+    /// `source_snapshot` and `merged_base` are also left alone: they live
+    /// in frozen frames (the sampled texture's, the canvas window's) that
+    /// destination growth doesn't move.
     ///
     /// The pre-stroke snapshot's new area is filled with what the paint
     /// target (of `target_format`) grows with, [`crate::gpu::default_fill`]:
@@ -530,4 +536,43 @@ fn build_pre_stroke_bind_group(
     sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     canvas_copy.bind(device, "pre-stroke-bg", view, Some(sampler))
+}
+
+/// Allocate an RGBA8 texture over `source`'s extent and freeze `source`'s
+/// pixels into it, sharing `save_pre_stroke_snapshot`'s format handling
+/// (R8 mask sources broadcast to RGBA8). The one capture behind every
+/// frozen stroke source: [`SourceSnapshot`] and the merged-appearance
+/// base. Records into `encoder`; the caller submits.
+fn freeze_source(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    brush_pipelines: &BrushPipelines,
+    source: &GpuPaintTarget<'_>,
+) -> wgpu::Texture {
+    use crate::brush::paint_target_ext::BrushPaintTargetExt;
+    let extent = source.layer_extent();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("stroke-frozen-source"),
+        size: wgpu::Extent3d {
+            width: extent.width,
+            height: extent.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        // RENDER_ATTACHMENT for the R8-mask broadcast pass, COPY_DST
+        // for the same-format hardware copy; mirrors the pre-stroke
+        // snapshot's dual capture path.
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    // The view only serves the R8-broadcast capture pass; sampling at
+    // flush time creates its own binding view from the texture.
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    source.save_pre_stroke_snapshot(device, encoder, brush_pipelines, &view, &texture);
+    texture
 }

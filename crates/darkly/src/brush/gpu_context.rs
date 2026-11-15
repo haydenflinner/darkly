@@ -188,6 +188,12 @@ pub struct StrokeResources<'a> {
     /// the slot binds `pre_stroke_texture`. Consumed via
     /// [`Self::source_texture`], never directly.
     pub source_override: Option<&'a wgpu::Texture>,
+    /// The merged page composite frozen at stroke start, when the graph
+    /// samples the merged live appearance (`LiveSource::MergedAppearance`,
+    /// `clone_source` Live + merged): the background the canvas-framed
+    /// appearance mirror lays the stroke's accumulations on
+    /// (`StrokeBuffer::save_merged_base`).
+    pub merged_base_texture: Option<&'a wgpu::Texture>,
 }
 
 /// Cursor-hover preview state. Populated by `brush_graph::regenerate_brush_cursor_preview`
@@ -521,7 +527,7 @@ impl<'a> StrokeGpuSetup<'a> {
     where
         'a: 'b,
     {
-        let (scratch, pre_stroke_texture, pre_stroke_bind_group, source_override) =
+        let (scratch, pre_stroke_texture, pre_stroke_bind_group, source_override, merged_base) =
             buffer.parts_for_brush_ctx();
         BrushGpuContext {
             encoder: self
@@ -544,6 +550,7 @@ impl<'a> StrokeGpuSetup<'a> {
                 pre_stroke_texture,
                 pre_stroke_bind_group,
                 source_override,
+                merged_base_texture: merged_base,
             }),
             preview: None,
             dab_batch: DabBatch::default(),

@@ -176,7 +176,7 @@ fn harness(initial: &[u8], graph: Graph<BrushWireType>) -> Harness {
 
 macro_rules! make_ctx {
     ($h:ident, $label:expr) => {{
-        let (_scratch, _pre_stroke_texture, _pre_stroke_bind_group, _source_override) =
+        let (_scratch, _pre_stroke_texture, _pre_stroke_bind_group, _source_override, _merged_base) =
             $h.stroke_buffer.parts_for_brush_ctx();
         BrushGpuContext {
             encoder: $h
@@ -207,6 +207,7 @@ macro_rules! make_ctx {
                 pre_stroke_texture: _pre_stroke_texture,
                 pre_stroke_bind_group: _pre_stroke_bind_group,
                 source_override: None,
+                merged_base_texture: None,
             }),
             preview: None,
             dab_batch: DabBatch::default(),

@@ -17,6 +17,7 @@ use super::nodes::{brush_settings, clone_source, paint_color, pen_input};
 use super::DAB_REFERENCE_SIZE;
 
 use super::gpu_context::BrushGpuContext;
+use super::texture_source::{LiveSource, ResolvedSource};
 use super::wgsl::CompiledBrush;
 use super::wire::{BrushWireType, ScalarValue};
 
@@ -849,12 +850,21 @@ impl BrushGraphRunner {
     /// (has a `clone_source` node requesting the `@group(3)` snapshot).
     /// Drives the engine's no-op gate and the frontend's gesture arming.
     pub fn samples_source(&self) -> bool {
-        use crate::brush::texture_source::{LiveSource, ResolvedSource};
         self.compiled.as_ref().is_some_and(|c| {
             c.graph_sources
                 .iter()
                 .any(|s| matches!(s, ResolvedSource::Live(LiveSource::StrokeSnapshot)))
         })
+    }
+
+    /// `true` if this runner's compiled brush samples the merged live
+    /// appearance (`clone_source` Live + merged): the engine freezes the
+    /// visible stack's composite at stroke start as the merged mirror's
+    /// base. See [`CompiledBrush::samples_merged_live`].
+    pub fn samples_merged_live(&self) -> bool {
+        self.compiled
+            .as_ref()
+            .is_some_and(|c| c.samples_merged_live())
     }
 
     /// Returns `true` if the graph terminates in a compiled-WGSL
@@ -1238,18 +1248,33 @@ impl BrushGraphRunner {
             .as_ref()
             .map(|c| c.channels.clone())
             .unwrap_or_default();
-        let reads_appearance = self
+        // Every per-dab-refreshed live source the graph samples gets a
+        // mirror in its own frame: the write side's dims for the stroke
+        // appearance, the canvas window's for the merged page.
+        let wanted_mirrors: Vec<LiveSource> = self
             .compiled
             .as_ref()
-            .is_some_and(|c| c.reads_stroke_appearance());
+            .map(|c| {
+                let mut kinds: Vec<LiveSource> = Vec::new();
+                for source in &c.graph_sources {
+                    if let ResolvedSource::Live(kind) = source {
+                        if kind.mirror_frame().is_some() && !kinds.contains(kind) {
+                            kinds.push(*kind);
+                        }
+                    }
+                }
+                kinds
+            })
+            .unwrap_or_default();
         let device = gpu.device;
+        let canvas = (gpu.canvas_width, gpu.canvas_height);
         if let Some(stroke) = gpu.stroke.as_mut() {
             stroke
                 .scratch
                 .ensure_channels(device, &mut gpu.encoder, &channels);
             stroke
                 .scratch
-                .ensure_appearance_mirror(device, reads_appearance);
+                .ensure_appearance_mirrors(device, &wanted_mirrors, canvas);
         }
 
         let registry = crate::brush::registry();

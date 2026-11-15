@@ -279,11 +279,25 @@ impl CompiledBrush {
     }
 
     /// Whether the graph samples a texture the terminal must refresh
-    /// between dabs: the live stroke appearance. A terminal asks this,
+    /// between dabs: a live appearance mirror. A terminal asks this,
     /// never the graph, to decide whether to allocate the appearance
     /// mirror and render it under each dab's read region.
     pub fn reads_stroke_appearance(&self) -> bool {
         self.graph_sources.iter().any(|s| s.refreshed_per_dab())
+    }
+
+    /// Whether the graph samples the merged live appearance: the engine
+    /// asks this at stroke start to decide whether to freeze the visible
+    /// stack's composite as the merged mirror's base.
+    pub fn samples_merged_live(&self) -> bool {
+        self.graph_sources.iter().any(|s| {
+            matches!(
+                s,
+                crate::brush::texture_source::ResolvedSource::Live(
+                    crate::brush::texture_source::LiveSource::MergedAppearance,
+                )
+            )
+        })
     }
 }
 

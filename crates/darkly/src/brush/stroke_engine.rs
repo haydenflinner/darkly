@@ -374,6 +374,12 @@ impl StrokeEngine {
         self.runner.samples_source()
     }
 
+    /// Whether the stroke's brush samples the merged live appearance: see
+    /// [`BrushGraphRunner::samples_merged_live`](crate::brush::eval::BrushGraphRunner::samples_merged_live).
+    pub fn samples_merged_live(&self) -> bool {
+        self.runner.samples_merged_live()
+    }
+
     pub fn random_seed() -> u32 {
         web_time::SystemTime::now()
             .duration_since(web_time::SystemTime::UNIX_EPOCH)
@@ -691,12 +697,8 @@ impl StrokeEngine {
             None => self.record.color,
         };
         self.runner.clear_slots();
-        self.runner.seed_sensors(
-            &dab_info,
-            color,
-            self.stroke_seed,
-            self.dab_count,
-        );
+        self.runner
+            .seed_sensors(&dab_info, color, self.stroke_seed, self.dab_count);
         self.runner.execute_cpu();
 
         // Per-dab context state: reset the read-mirror cache so the first

@@ -1,13 +1,21 @@
-// The stroke's appearance under one dab's read region: the pre-stroke
-// snapshot with a terminal's packed grounds laid on it under the commit
-// law, written into the scratch's appearance mirror. Dispatched once per
-// dab, before that dab's own dispatch in the same compute pass, so a graph
-// that samples the stroke at other pixels (`clone_source`'s Live arm) reads
-// exactly what the commit would show after the previous dab.
+// The stroke's appearance under one dab's read region: the mirror's
+// background (the pre-stroke snapshot, or the stroke-start page composite
+// for the merged mirror) with a terminal's packed grounds laid on it under
+// the commit law, written into the scratch's appearance mirror. Dispatched
+// once per dab, before that dab's own dispatch in the same compute pass,
+// so a graph that samples the stroke at other pixels (`clone_source`'s
+// Live arm) reads exactly what the commit would show after the previous
+// dab.
 //
 // Full strength, paint mode: the stroke's opacity cap and its blend mode
 // are the commit's, applied once, as for every `paint` brush. Applying
 // them here too would scale the smear chain twice.
+//
+// The grounds are layer-framed; the mirror may not be (the merged
+// appearance is canvas-framed). `ground_origin` / `ground_size` map a
+// mirror texel back to its ground texel; texels the mapping sends outside
+// the grounds read empty accumulation, so the mirror there is `base`
+// unchanged.
 //
 // Group 0 is the per-brush uniform group the brush's own pipeline has
 // bound. This module declares nothing in it, so the group stays bound
@@ -25,9 +33,11 @@ struct SnapshotUniforms {
     has_build: u32,      // 0 = slot absent
     law: u32,            // 0 = deposit, 1 = move (`lib/commit_law.wgsl`)
     _pad: u32,
+    ground_origin: vec2<i32>, // grounds' texel (0,0) in mirror texels
+    ground_size: vec2<u32>,   // grounds' extent
 };
 // One per dab, in lockstep with the dab records: the read region, in
-// write-side (layer-local) texels, already clamped to the layer.
+// mirror texels, already clamped to the mirror's frame.
 struct SnapshotRecord { origin: vec2<u32>, size: vec2<u32> };
 struct DabSlot { i: u32, pad0: u32, pad1: u32, pad2: u32 };
 
@@ -37,7 +47,7 @@ struct DabSlot { i: u32, pad0: u32, pad1: u32, pad2: u32 };
 @group(1) @binding(3) var wash: texture_2d<u32>;
 @group(1) @binding(4) var build: texture_2d<u32>;
 @group(1) @binding(5) var appearance: texture_storage_2d<rgba8unorm, write>;
-@group(1) @binding(6) var pre_stroke: texture_2d<f32>;
+@group(1) @binding(6) var base: texture_2d<f32>;
 
 @compute @workgroup_size(WORKGROUP, WORKGROUP, 1)
 fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -46,9 +56,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let px = vec2<i32>(r.origin + gid.xy);
-    let wash_px = unpack4x8unorm(textureLoad(wash, px, 0).r);
-    let build_px = unpack4x8unorm(textureLoad(build, px, 0).r);
-    let bg = textureLoad(pre_stroke, px, 0);
+    let gpx = px - flags.ground_origin;
+    var wash_px = vec4f(0.0);
+    var build_px = vec4f(0.0);
+    if (all(gpx >= vec2<i32>(0)) && all(gpx < vec2<i32>(flags.ground_size))) {
+        wash_px = unpack4x8unorm(textureLoad(wash, gpx, 0).r);
+        build_px = unpack4x8unorm(textureLoad(build, gpx, 0).r);
+    }
+    let bg = textureLoad(base, px, 0);
     textureStore(appearance, px, commit_law(wash_px, build_px, bg, 0u, flags.law,
                                             f32(flags.has_wash), f32(flags.has_build)));
 }

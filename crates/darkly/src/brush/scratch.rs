@@ -40,17 +40,20 @@
 //! per dab), so prefer the direct read whenever the target allows it.
 //!
 //! A third read path serves a graph that samples the stroke at *other*
-//! pixels from inside a dispatch-per-dab pass: the **appearance mirror**
-//! ([`Scratch::appearance_view`]), a layer-sized `rgba8unorm` texture the
-//! terminal renders the stroke's appearance into under each dab's read
-//! region before that dab's dispatch. It is derived per dab and never
-//! cleared, checkpointed or restored.
+//! pixels from inside a dispatch-per-dab pass: the **appearance mirrors**
+//! ([`Scratch::appearance_view`]), `rgba8unorm` textures the terminal
+//! renders the stroke's appearance into under each dab's read region
+//! before that dab's dispatch, one per per-dab-refreshed live source in
+//! that source's frame (the layer, or the canvas window for merged
+//! sampling). They are derived per dab and never cleared, checkpointed
+//! or restored.
 //!
 //! Ownership: owned by `StrokeBuffer`, allocated at stroke start, freed at
 //! stroke end.
 
 use crate::brush::node::DabPass;
 use crate::brush::pipeline::CanvasCopyLayouts;
+use crate::brush::texture_source::LiveSource;
 use crate::coord::LayerRect;
 
 /// Per-dab read-mirror initial size.  1×1 is the smallest legal wgpu
@@ -120,14 +123,18 @@ pub struct Scratch {
 
     /// The stroke's appearance under the dabs placed so far, rendered by
     /// the terminal under each dab's read region before that dab runs, for
-    /// graphs that sample the live stroke at other pixels. Layer-sized in
+    /// graphs that sample the live stroke at other pixels. One mirror per
+    /// per-dab-refreshed [`LiveSource`], in that source's frame
+    /// ([`LiveSource::mirror_frame`]): the layer mirror is layer-sized in
     /// the write side's frame so a sampler addresses it through the paint
-    /// target's extent alone; written as storage by the terminal's
+    /// target's extent alone; the merged mirror is window-sized in the
+    /// canvas frame so a sampler reaches pixels other layers own beyond
+    /// the painted layer's edge. Written as storage by the terminal's
     /// snapshot dispatch, sampled as an ordinary graph texture by the
     /// dab's dispatch. Derived: never cleared, checkpointed or restored,
-    /// because every texel a dab reads was rewritten for that dab. `None`
+    /// because every texel a dab reads was rewritten for that dab. Empty
     /// until a brush asks.
-    appearance: Option<(wgpu::Texture, wgpu::TextureView)>,
+    appearance: std::collections::HashMap<LiveSource, (wgpu::Texture, wgpu::TextureView)>,
 }
 
 /// Texel format of the appearance mirror: straight RGBA8, write-only
@@ -276,30 +283,43 @@ impl Scratch {
             format,
             pass,
             channels: None,
-            appearance: None,
+            appearance: std::collections::HashMap::new(),
         }
     }
 
-    /// Allocate the appearance mirror at the write side's size when
-    /// `wanted` and absent; free it when not wanted (a `Scratch` outlives
-    /// one brush, the reason [`Scratch::ensure_channels`] frees too).
-    /// Idempotent. Its contents need no clear: every texel a dab samples
-    /// is rewritten for that dab first.
-    pub fn ensure_appearance_mirror(&mut self, device: &wgpu::Device, wanted: bool) {
-        if !wanted {
-            self.appearance = None;
-        } else if self.appearance.is_none() {
-            self.appearance = Some(create_appearance_texture(
-                device,
-                self.write_w,
-                self.write_h,
-            ));
+    /// Allocate an appearance mirror for every per-dab-refreshed live
+    /// source the brush samples, in each source's own frame (the write
+    /// side's dims for a layer mirror, `canvas` for a merged one), free
+    /// the mirrors nothing samples, and reallocate any whose frame's dims
+    /// changed. Idempotent. Their contents need no clear: every texel a
+    /// dab samples is rewritten for that dab first.
+    pub fn ensure_appearance_mirrors(
+        &mut self,
+        device: &wgpu::Device,
+        wanted: &[LiveSource],
+        canvas: (u32, u32),
+    ) {
+        self.appearance.retain(|kind, _| wanted.contains(kind));
+        for kind in wanted {
+            let Some(frame) = kind.mirror_frame() else {
+                continue;
+            };
+            let (w, h) = frame.dims((self.write_w, self.write_h), canvas);
+            if self
+                .appearance
+                .get(kind)
+                .is_none_or(|(t, _)| t.width() != w || t.height() != h)
+            {
+                self.appearance
+                    .insert(*kind, create_appearance_texture(device, w, h));
+            }
         }
     }
 
-    /// The appearance mirror's view, when the brush asked for one.
-    pub fn appearance_view(&self) -> Option<&wgpu::TextureView> {
-        self.appearance.as_ref().map(|(_, view)| view)
+    /// The appearance mirror's view for `kind`, when the brush asked for
+    /// one.
+    pub fn appearance_view(&self, kind: LiveSource) -> Option<&wgpu::TextureView> {
+        self.appearance.get(&kind).map(|(_, view)| view)
     }
 
     /// Allocate the terminal's declared channels if they aren't already,
@@ -692,10 +712,17 @@ impl Scratch {
             self.channels = Some(grown);
         }
 
-        // The appearance mirror follows the write side's frame with no
-        // copy: every texel a dab reads is rewritten for that dab.
-        if self.appearance.is_some() {
-            self.appearance = Some(create_appearance_texture(device, target_w, target_h));
+        // Layer-framed appearance mirrors follow the write side's frame
+        // with no copy: every texel a dab reads is rewritten for that dab.
+        // A canvas-framed mirror anchors to the window, which a layer
+        // growth does not move, so it is left alone.
+        for (kind, mirror) in self.appearance.iter_mut() {
+            if kind
+                .mirror_frame()
+                .is_some_and(|frame| frame.follows_layer_growth())
+            {
+                *mirror = create_appearance_texture(device, target_w, target_h);
+            }
         }
 
         self.write_texture = new_texture;
@@ -1047,19 +1074,24 @@ mod tests {
         }
     }
 
-    /// The appearance mirror is allocated layer-sized for storage writes
-    /// and filtered sampling only when asked, follows the write side
-    /// through a grow, and is freed when the next brush does not ask.
+    /// The layer-framed appearance mirror is allocated layer-sized for
+    /// storage writes and filtered sampling only when asked, follows the
+    /// write side through a grow, and is freed when the next brush does
+    /// not ask. A canvas-framed mirror (the merged appearance) takes the
+    /// window's dims and does not follow the grow.
     #[test]
     fn appearance_mirror_is_layer_sized_and_follows_the_write_side() {
         let (device, queue, mut scratch) = make_scratch(
             crate::brush::node::PACKED_GROUND_FORMAT,
             DabPass::DispatchPerDab,
         );
-        assert!(scratch.appearance_view().is_none());
-        scratch.ensure_appearance_mirror(&device, true);
-        let size = |s: &Scratch| {
-            let (t, _) = s.appearance.as_ref().expect("allocated");
+        let layer = LiveSource::StrokeAppearance;
+        let merged = LiveSource::MergedAppearance;
+        assert!(scratch.appearance_view(layer).is_none());
+        let canvas = (16, 8);
+        scratch.ensure_appearance_mirrors(&device, &[layer, merged], canvas);
+        let size = |s: &Scratch, kind: LiveSource| {
+            let (t, _) = s.appearance.get(&kind).expect("allocated");
             assert_eq!(t.format(), APPEARANCE_FORMAT);
             assert_eq!(
                 t.usage(),
@@ -1067,15 +1099,18 @@ mod tests {
             );
             (t.width(), t.height())
         };
-        assert_eq!(size(&scratch), scratch.write_dimensions());
+        assert_eq!(size(&scratch, layer), scratch.write_dimensions());
+        assert_eq!(size(&scratch, merged), canvas);
 
         let mut encoder = device.create_command_encoder(&Default::default());
         scratch.grow_write(&device, &mut encoder, 48, 40, 16, 24);
         queue.submit([encoder.finish()]);
-        assert_eq!(size(&scratch), (48, 40));
+        assert_eq!(size(&scratch, layer), (48, 40));
+        assert_eq!(size(&scratch, merged), canvas);
 
-        scratch.ensure_appearance_mirror(&device, false);
-        assert!(scratch.appearance_view().is_none());
+        scratch.ensure_appearance_mirrors(&device, &[], canvas);
+        assert!(scratch.appearance_view(layer).is_none());
+        assert!(scratch.appearance_view(merged).is_none());
     }
 
     /// Every declared channel is readable through the canvas-copy layout

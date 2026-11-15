@@ -377,34 +377,42 @@ impl DarklyEngine {
                 &paint_target,
             );
         });
-        self.capture_source_snapshot(layer_id, &mut buffer, engine.samples_source());
+        self.capture_source_snapshot(layer_id, &mut buffer, engine);
         Some(buffer)
     }
 
-    /// Freeze the source a brush that samples one reads into `buffer`, or
-    /// drop a frozen one when the brush reads the painted layer or nothing.
+    /// Freeze the sources a brush that samples them reads into `buffer`,
+    /// or drop frozen ones when the brush reads the painted layer or
+    /// nothing.
     ///
-    /// Resolution is merged, then pinned layer, then same-layer. The first
-    /// two freeze a separate snapshot (required for merged, where the
-    /// destination would feed back mid-stroke; safe against per-frame
-    /// procedural sources and mid-stroke disposal; deterministic under
-    /// stabilizer divergence rewind). Same-layer reads the pre-stroke
-    /// snapshot, which is the self-clone freeze.
+    /// Snapshot resolution is merged, then pinned layer, then same-layer.
+    /// The first two freeze a separate snapshot (required for merged,
+    /// where the destination would feed back mid-stroke; safe against
+    /// per-frame procedural sources and mid-stroke disposal; deterministic
+    /// under stabilizer divergence rewind). Same-layer reads the
+    /// pre-stroke snapshot, which is the self-clone freeze.
+    ///
+    /// A brush that samples the merged live appearance freezes the same
+    /// root composite once more as the merged mirror's base — the page
+    /// the stroke's accumulations are laid onto, one composite render
+    /// serving both captures.
     pub(crate) fn capture_source_snapshot(
         &mut self,
         layer_id: LayerId,
         buffer: &mut StrokeBuffer,
-        samples_source: bool,
+        engine: &StrokeEngine,
     ) {
-        buffer.clear_source_snapshot();
-        if !samples_source {
+        buffer.clear_frozen_sources();
+        let samples_source = engine.samples_source();
+        let samples_merged_live = engine.samples_merged_live();
+        if !samples_source && !samples_merged_live {
             return;
         }
         // "Sample Merged": a structural port-default read, not a compile.
-        let sample_merged = self.clone_sample_merged();
-        if sample_merged {
-            // Merged freezes the root composite, so make sure it is fresh
-            // (a no-op when clean).
+        let sample_merged = samples_source && self.clone_sample_merged();
+        if sample_merged || samples_merged_live {
+            // Both merged captures freeze the root composite, so make sure
+            // it is fresh (a no-op when clean). One render serves both.
             self.compositor.render_offscreen(
                 &self.gpu.device,
                 &self.gpu.queue,
@@ -413,16 +421,19 @@ impl DarklyEngine {
             );
         }
         let canvas_rect = self.doc.canvas_rect();
-        let source = if sample_merged {
-            // The composite cache is straight-alpha Rgba8Unorm with content
-            // at the top-left, exactly canvas-window-sized.
-            Some(GpuPaintTarget::from_canvas_texture(
+        // The composite cache is straight-alpha Rgba8Unorm with content
+        // at the top-left, exactly canvas-window-sized.
+        let composite = || {
+            GpuPaintTarget::from_canvas_texture(
                 self.compositor.composited_texture(),
                 self.compositor.composited_view(),
                 wgpu::TextureFormat::Rgba8Unorm,
                 canvas_rect,
-            ))
-        } else {
+            )
+        };
+        let source = if sample_merged {
+            Some(composite())
+        } else if samples_source {
             // Pinned layer, validated document-side first: the document is
             // authoritative, and layer removal is orphan-keep (the entity
             // parks in the slotmap for undo, and the compositor keeps its
@@ -436,6 +447,8 @@ impl DarklyEngine {
                 .filter(|&sid| sid != layer_id && self.doc.parent_of(sid).is_some())
                 .and_then(|sid| self.compositor.node_texture(sid))
                 .map(|src_tex| GpuPaintTarget::from_node(src_tex, canvas_rect))
+        } else {
+            None
         };
         if let Some(source) = source {
             self.gpu.encode("clone-source-snapshot", |encoder| {
@@ -444,6 +457,16 @@ impl DarklyEngine {
                     encoder,
                     &self.brush_pipelines,
                     &source,
+                );
+            });
+        }
+        if samples_merged_live {
+            self.gpu.encode("merged-base-snapshot", |encoder| {
+                buffer.save_merged_base(
+                    &self.gpu.device,
+                    encoder,
+                    &self.brush_pipelines,
+                    &composite(),
                 );
             });
         }
@@ -549,14 +572,14 @@ impl DarklyEngine {
         );
 
         let mut perf = crate::brush::gpu_context::BrushPerfCounters::default();
-        if engine.samples_source() {
+        if engine.samples_source() || engine.samples_merged_live() {
             // A merged source reads the composite, which must not hold the
             // rendering being replaced: return the target to its pre-stroke
             // pixels before the source is frozen, as it was when the stroke
             // began.
             self.restore_pre_stroke(&stroke, None);
         }
-        self.capture_source_snapshot(stroke.layer_id, &mut stroke.buffer, engine.samples_source());
+        self.capture_source_snapshot(stroke.layer_id, &mut stroke.buffer, &engine);
 
         if let Some(setup) = self.redraw_gpu_setup(&stroke) {
             // The frozen source's frame when one exists, else the target's.

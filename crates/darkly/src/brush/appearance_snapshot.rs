@@ -36,9 +36,9 @@ pub fn appearance_snapshot_registration() -> BrushPipelineRegistration {
     }
 }
 
-/// One dab's read region, in write-side (layer-local) texels, already
-/// clamped to the layer: the snapshot's dispatch grid and the texel it
-/// writes. In lockstep with the dab records.
+/// One dab's read region, in the mirror's frame's texels, already
+/// clamped to it: the snapshot's dispatch grid and the texel it writes.
+/// In lockstep with the dab records.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SnapshotRecord {
@@ -47,7 +47,7 @@ pub struct SnapshotRecord {
 }
 
 /// Which of the two slots hold an accumulation this stroke, and the law
-/// they are laid under.
+/// they are laid under, plus where the grounds sit inside the mirror.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SnapshotUniforms {
@@ -55,6 +55,14 @@ struct SnapshotUniforms {
     has_build: u32,
     law: u32,
     _pad: u32,
+    /// The grounds' frame inside the mirror's: the origin of the grounds'
+    /// texel (0, 0) in mirror texels, and their size. `[0, 0]` plus the
+    /// grounds' own size is the identity mapping the layer-framed mirror
+    /// uses; the layer's rect inside the canvas window is the merged
+    /// mirror's. Texels the mapping sends outside the grounds read empty
+    /// accumulation, so the mirror there is `base` unchanged.
+    ground_origin: [i32; 2],
+    ground_size: [u32; 2],
 }
 
 /// What one flush's snapshots read and write. The terminal maps its
@@ -64,16 +72,30 @@ pub struct SnapshotSources<'a> {
     pub wash: Option<&'a wgpu::TextureView>,
     pub build: Option<&'a wgpu::TextureView>,
     pub law: CommitLaw,
-    /// The pre-stroke snapshot, layer-sized like the grounds.
-    pub pre_stroke: &'a wgpu::TextureView,
-    /// The scratch's appearance mirror.
+    /// Where the grounds sit inside the mirror: [`SnapshotUniforms`].
+    pub ground_origin: [i32; 2],
+    pub ground_size: [u32; 2],
+    /// The background the law composites the grounds onto, in the
+    /// mirror's frame: the pre-stroke snapshot for the layer-framed
+    /// mirror, the stroke-start page composite for the merged one.
+    pub base: &'a wgpu::TextureView,
+    /// The scratch's appearance mirror, sized to the frame `base` and
+    /// the records share.
     pub appearance: &'a wgpu::TextureView,
 }
 
 /// One flush's group 1, built by [`AppearanceSnapshotPipeline::begin_flush`].
+/// Owns its flags and records buffers: a terminal can run more than one
+/// appearance kind's snapshot per dab (the stroke's and the merged
+/// page's), and `queue.write_buffer` lands before the submission, so two
+/// flushes sharing one buffer would both read the last write. Dropping
+/// the buffers while their submission is in flight is safe: wgpu defers
+/// destruction past it.
 pub struct FlushSnapshots {
     bind_group: wgpu::BindGroup,
     sizes: Vec<[u32; 2]>,
+    _flags: wgpu::Buffer,
+    _records: wgpu::Buffer,
 }
 
 pub struct AppearanceSnapshotPipeline {
@@ -82,13 +104,9 @@ pub struct AppearanceSnapshotPipeline {
     /// declares, so it stays bound across the pipeline switch.
     pipeline: wgpu::ComputePipeline,
     /// Group 1: flags, records, slot, the two grounds, the mirror, the
-    /// pre-stroke snapshot. Its bind group is built per flush, because a
-    /// grow reallocates every view in it.
+    /// base snapshot. Its bind group is built per flush, because a grow
+    /// reallocates every view in it.
     bgl: wgpu::BindGroupLayout,
-    /// The two presence flags, written per flush.
-    flags: wgpu::Buffer,
-    /// One [`SnapshotRecord`] per queued dab, uploaded per flush.
-    records: wgpu::Buffer,
 }
 
 fn view(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
@@ -197,32 +215,17 @@ impl AppearanceSnapshotPipeline {
                 },
                 cache: None,
             });
-        let flags = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("appearance-snapshot-flags"),
-            size: std::mem::size_of::<SnapshotUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let records = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("appearance-snapshot-records"),
-            size: MAX_DABS_PER_PHASE as u64 * std::mem::size_of::<SnapshotRecord>() as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        Self {
-            pipeline,
-            bgl,
-            flags,
-            records,
-        }
+        Self { pipeline, bgl }
     }
 
     /// Upload this flush's records and flags and build its group 1.
     /// `index_buffer` is the terminal's static dab index (slot `i` holds
     /// `i`, [`DAB_SLOT_STRIDE`] apart): dab `i`'s snapshot binds it at the
     /// same offset as the dab's own dispatch, so both read `slot.i == i`.
-    /// The buffers are written per flush like the terminal's dab records,
-    /// under the same one-flush-per-submission rule.
+    /// The buffers are per-flush, held by the returned [`FlushSnapshots`]:
+    /// `queue.write_buffer` lands before the submission, so a second
+    /// appearance kind's flush in the same dab batch cannot overwrite
+    /// this one's records.
     pub fn begin_flush(
         &self,
         device: &wgpu::Device,
@@ -235,28 +238,42 @@ impl AppearanceSnapshotPipeline {
             .wash
             .or(sources.build)
             .expect("a terminal accumulates into at least one slot");
+        let flags = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("appearance-snapshot-flags"),
+            size: std::mem::size_of::<SnapshotUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let records_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("appearance-snapshot-records"),
+            size: MAX_DABS_PER_PHASE as u64 * std::mem::size_of::<SnapshotRecord>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         queue.write_buffer(
-            &self.flags,
+            &flags,
             0,
             bytemuck::bytes_of(&SnapshotUniforms {
                 has_wash: u32::from(sources.wash.is_some()),
                 has_build: u32::from(sources.build.is_some()),
                 law: sources.law as u32,
                 _pad: 0,
+                ground_origin: sources.ground_origin,
+                ground_size: sources.ground_size,
             }),
         );
-        queue.write_buffer(&self.records, 0, bytemuck::cast_slice(records));
+        queue.write_buffer(&records_buf, 0, bytemuck::cast_slice(records));
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("appearance-snapshot-bg"),
             layout: &self.bgl,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: self.flags.as_entire_binding(),
+                    resource: flags.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: self.records.as_entire_binding(),
+                    resource: records_buf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -271,12 +288,14 @@ impl AppearanceSnapshotPipeline {
                 view(3, sources.wash.unwrap_or(present)),
                 view(4, sources.build.unwrap_or(present)),
                 view(5, sources.appearance),
-                view(6, sources.pre_stroke),
+                view(6, sources.base),
             ],
         });
         FlushSnapshots {
             bind_group,
             sizes: records.iter().map(|r| r.size).collect(),
+            _flags: flags,
+            _records: records_buf,
         }
     }
 

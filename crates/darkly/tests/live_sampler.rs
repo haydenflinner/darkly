@@ -145,6 +145,15 @@ fn smooth_smudge(softness: f32, buildup: Option<f32>, strength: f32) -> Graph<Br
     g
 }
 
+/// [`smooth_smudge`] with `clone_source.merged` on: the Live arm then
+/// samples the merged page (the visible stack plus the stroke so far)
+/// instead of the painted layer's mirror.
+fn merged_smudge(softness: f32, strength: f32) -> Graph<BrushWireType> {
+    let mut g = smooth_smudge(softness, None, strength);
+    set(&mut g, "clone_source", "merged", 1.0);
+    g
+}
+
 const RADIUS: f32 = 20.0;
 
 // ── Harness ─────────────────────────────────────────────────────────────
@@ -161,6 +170,30 @@ fn render(
     graph: &Graph<BrushWireType>,
     frame: Frame,
     pre: &[u8],
+    dabs: &[([f32; 2], [f32; 2])],
+) -> Run {
+    render_inner(graph, frame, pre, None, dabs)
+}
+
+/// [`render`] with the visible page the merged appearance freezes at
+/// stroke start: `page` is the whole composited stack as the compositor
+/// would hand it over, canvas-window-sized and window-anchored — the
+/// painted layer's pixels plus whatever the other layers show.
+fn render_merged(
+    graph: &Graph<BrushWireType>,
+    frame: Frame,
+    pre: &[u8],
+    page: &[u8],
+    dabs: &[([f32; 2], [f32; 2])],
+) -> Run {
+    render_inner(graph, frame, pre, Some(page), dabs)
+}
+
+fn render_inner(
+    graph: &Graph<BrushWireType>,
+    frame: Frame,
+    pre: &[u8],
+    page: Option<&[u8]>,
     dabs: &[([f32; 2], [f32; 2])],
 ) -> Run {
     let (device, queue) = shared_device();
@@ -190,11 +223,25 @@ fn render(
     };
     let mut enc = device.create_command_encoder(&Default::default());
     stroke_buffer.save_pre_stroke(&device, &mut enc, &pipelines, &target());
+    if let Some(page) = page {
+        // The merged mirror's base, frozen like the engine freezes the
+        // composite cache at stroke start: window-sized, window-anchored.
+        let (page_texture, page_view) = create_test_texture(&device, &queue, SIDE, SIDE, page);
+        let window =
+            CanvasRect::from_xywh(frame.canvas_origin[0], frame.canvas_origin[1], SIDE, SIDE);
+        let composite = darkly::gpu::paint_target::GpuPaintTarget::from_canvas_texture(
+            &page_texture,
+            &page_view,
+            wgpu::TextureFormat::Rgba8Unorm,
+            window,
+        );
+        stroke_buffer.save_merged_base(&device, &mut enc, &pipelines, &composite);
+    }
     queue.submit([enc.finish()]);
 
     macro_rules! make_ctx {
         () => {{
-            let (scratch, pre_stroke_tex, pre_stroke_bg, source_override) =
+            let (scratch, pre_stroke_tex, pre_stroke_bg, source_override, merged_base) =
                 stroke_buffer.parts_for_brush_ctx();
             BrushGpuContext {
                 encoder: device.create_command_encoder(&Default::default()),
@@ -215,6 +262,7 @@ fn render(
                     pre_stroke_texture: pre_stroke_tex,
                     pre_stroke_bind_group: pre_stroke_bg,
                     source_override,
+                    merged_base_texture: merged_base,
                 }),
                 preview: None,
                 dab_batch: DabBatch::default(),
@@ -782,97 +830,235 @@ fn a_soft_smear_over_a_dark_surface_is_the_identity() {
     assert!(worst <= 1, "the surface changed by up to {worst} levels");
 }
 
-/// `paint.pickup` thins the carried pigment without thinning the
-/// displacement: the smudge still erases the red square, but the trail
-/// it leaves behind is dimmer than with full pickup.
+// ── Pickup ──────────────────────────────────────────────────────────────
+
+/// `pickup` thins what the dab carries, independent of `coverage`'s
+/// displacement. A hard dab at full coverage over a red bar dragging
+/// onto white: carrying everything swaps the white for red; carrying
+/// nothing scrapes the white away and leaves a hole.
 #[test]
 fn pickup_thins_what_the_dab_carries_without_changing_displacement() {
-    // The same smear once at pickup 1 and once at pickup 0.25.
-    let mut half = smooth_smudge(1.0, None, 0.0);
-    set(&mut half, "paint", "pickup", 0.25);
-    let run = |graph: &Graph<BrushWireType>| {
-        let dabs: Vec<([f32; 2], [f32; 2])> = (0..24)
-            .map(|i| ([40.0 + i as f32, 64.0], [1.0, 0.0]))
-            .collect();
-        render(graph, ORIGIN, &two_tone(), &dabs)
-    };
-    let full = run(&smooth_smudge(1.0, None, 0.0));
-    let thin = run(&half);
+    let pre = canvas(|x, _| {
+        if x < 64 {
+            [220, 20, 20, 255]
+        } else {
+            [255, 255, 255, 255]
+        }
+    });
+    let dab = ([70.0, 64.0], [8.0, 0.0]);
+    let full = render(&smooth_smudge(0.0, None, 1.0), ORIGIN, &pre, &[dab]);
+    let mut g = smooth_smudge(0.0, None, 1.0);
+    set(&mut g, "paint", "pickup", 0.0);
+    let none = render(&g, ORIGIN, &pre, &[dab]);
 
-    // Displacement equal: where the dabs passed, the original surface is
-    // equally gone under both pickups.
-    for (a, b) in full.layer.iter().zip(thin.layer.iter()) {
-        assert!(
-            (a & 0xFF).abs_diff(b & 0xFF) <= 8 || *a == *b,
-            "displacement diverged: {a:08x} vs {b:08x}"
-        );
-    }
-    // Carried pigment thinner: the trail right of the red square is
-    // redder under full pickup than under the thinned one.
-    let redness = |img: &[u8]| -> u32 {
-        (68..80)
-            .map(|x| pixel(img, x, 64)[0] as u32)
-            .sum::<u32>()
-    };
+    // Pixel 68 is inside the footprint and samples pixel 60, opaque red.
+    let carried = pixel(&full.layer, 68, 64);
     assert!(
-        redness(&full.layer) > redness(&thin.layer) + 200,
-        "pickup should thin the trail: full {} vs thin {}",
-        redness(&full.layer),
-        redness(&thin.layer)
+        carried[0] > 200 && carried[3] > 240,
+        "full pickup deposits the red: {carried:?}"
+    );
+    let scraped = pixel(&none.layer, 68, 64);
+    assert!(
+        scraped[3] < 20,
+        "a finger carrying nothing scrapes the paint off: {scraped:?}"
     );
 }
 
-/// `dulling = 1` gives the dab one colour - the average of the window
-/// under it - instead of a per-fragment copy of the mirror. Two pixels
-/// inside the same dab carry the same carried colour where smearing
-/// would give each its own.
+// ── Dulling and radius ──────────────────────────────────────────────────
+
+/// Dulling gives the whole dab one colour: the alpha-weighted average
+/// over the previous dab's window, centred on `pos - motion`. On the
+/// ramp the smearing dab's two ends land 40 levels of red apart; the
+/// dulling dab is flat at the window's mean.
 #[test]
 fn dulling_carries_one_averaged_colour() {
-    let mut g = smooth_smudge(1.0, None, 0.0);
-    set(&mut g, "sampler", "dulling", 1.0);
-    let dabs: Vec<([f32; 2], [f32; 2])> = (0..16)
-        .map(|i| ([56.0 + i as f32, 64.0], [1.0, 0.0]))
-        .collect();
-    let run = render(&g, ORIGIN, &ramp(), &dabs);
-    // A dab well inside the stroke: the pixels it smeared share one
-    // averaged colour, so a row across the deposited trail is flatter
-    // than the underlying ramp would smear to.
-    let spread = |img: &[u8], x0: u32, x1: u32| {
-        let px: Vec<u8> = (x0..x1).map(|x| pixel(img, x, 64)[0]).collect();
-        *px.iter().max().unwrap() as i32 - *px.iter().min().unwrap() as i32
-    };
-    // Smearing the same ramp leaves a red gradient in the trail.
-    let smear = render(&smooth_smudge(1.0, None, 0.0), ORIGIN, &ramp(), &dabs);
+    let pre = ramp();
+    let dab = ([64.0, 64.0], [8.0, 0.0]);
+    let smearing = render(&smooth_smudge(0.0, None, 1.0), ORIGIN, &pre, &[dab]);
+    let mut g = smooth_smudge(0.0, None, 1.0);
+    set(&mut g, "clone_source", "dulling", 1.0);
+    let dulling = render(&g, ORIGIN, &pre, &[dab]);
+
+    let (near, far) = (pixel(&dulling.layer, 54, 64), pixel(&dulling.layer, 74, 64));
+    for c in 0..4 {
+        assert!(
+            (near[c] as i32 - far[c] as i32).abs() <= 2,
+            "the dab is one colour: {near:?} vs {far:?}"
+        );
+    }
+    // The window centres on 64 - 8 = 56 and spans x in [36, 76]; the
+    // ramp's red (2x) averages to 112 there.
     assert!(
-        spread(&run.layer, 62, 72) <= spread(&smear.layer, 62, 72),
-        "dulling should leave a flatter trail than smearing"
+        (near[0] as i32 - 112).abs() <= 6,
+        "averaged red, expected ~112: {near:?}"
+    );
+
+    let (snear, sfar) = (
+        pixel(&smearing.layer, 54, 64),
+        pixel(&smearing.layer, 74, 64),
+    );
+    assert!(
+        sfar[0] as i32 - snear[0] as i32 > 30,
+        "smearing still smears: {snear:?} vs {sfar:?}"
     );
 }
 
-/// `radius` widens the dulling window around the previous dab's centre:
-/// the carried colour approaches the average of a larger footprint as
-/// radius grows past 1.
+/// `radius` scales the dulling window about the previous dab's centre: 1
+/// covers the dab rect, 3 reaches three times that, pulling the red bar
+/// into an otherwise black average.
 #[test]
 fn radius_widens_the_dulling_window() {
-    let avg = |radius: f32| {
-        let mut g = smooth_smudge(1.0, None, 0.0);
-        set(&mut g, "sampler", "dulling", 1.0);
-        set(&mut g, "sampler", "radius", radius);
-        let dabs: Vec<([f32; 2], [f32; 2])> = (0..12)
-            .map(|i| ([56.0 + i as f32, 64.0], [1.0, 0.0]))
-            .collect();
-        render(&g, ORIGIN, &ramp(), &dabs).layer
-    };
-    // The ramp rises with x. A small window averages a neighbourhood
-    // under the dab; a bigger window reaches further left and right,
-    // pulling the mean towards the ramp's centre value. Check the trail
-    // colour at two radii differ - the window actually changed.
-    let near = avg(1.0);
-    let wide = avg(3.0);
-    let near_r = pixel(&near, 68, 64)[0] as i32;
-    let wide_r = pixel(&wide, 68, 64)[0] as i32;
-    assert_ne!(
-        near_r, wide_r,
-        "radius 1 and 3 should average different windows"
+    let dab = ([80.0, 64.0], [8.0, 0.0]);
+    let mut g1 = smooth_smudge(0.0, None, 1.0);
+    set(&mut g1, "clone_source", "dulling", 1.0);
+    // Window centred on 72: radius 1 spans x in [52, 92], all black.
+    let narrow = render(&g1, ORIGIN, &two_tone(), &[dab]);
+    let mut g3 = smooth_smudge(0.0, None, 1.0);
+    set(&mut g3, "clone_source", "dulling", 1.0);
+    set(&mut g3, "clone_source", "radius", 3.0);
+    // Radius 3 spans x in [12, 132]: the red bar (x < 36) joins the
+    // average.
+    let wide = render(&g3, ORIGIN, &two_tone(), &[dab]);
+
+    let inner = pixel(&narrow.layer, 80, 64);
+    assert!(
+        inner[0] < 40 && inner[3] > 240,
+        "the narrow window is all black: {inner:?}"
     );
+    let outer = pixel(&wide.layer, 80, 64);
+    assert!(
+        outer[0] > 30 && outer[3] > 240,
+        "radius 3 reaches the red bar: {outer:?}"
+    );
+}
+
+// ── Merged live ─────────────────────────────────────────────────────────
+
+/// `clone_source` Live + merged compiles to the merged appearance slot:
+/// the graph requests it, the flag trips the per-dab refresh, and the
+/// emitted WGSL anchors the mirror to the canvas window, not the layer.
+#[test]
+fn merged_live_compiles_to_the_merged_appearance_slot() {
+    let runner = compile_graph(&merged_smudge(0.0, 1.0)).expect("compiles");
+    let compiled = runner.compiled_brush().unwrap();
+    let live = compiled
+        .graph_sources
+        .iter()
+        .position(|s| *s == ResolvedSource::Live(LiveSource::MergedAppearance))
+        .expect("the merged live slot");
+    assert!(compiled.reads_stroke_appearance());
+    assert!(compiled.samples_merged_live());
+    assert!(compiled
+        .stroke_wgsl
+        .contains(&format!("textureLoad(graph_tex_{live}")));
+    assert!(
+        compiled.stroke_wgsl.contains("u.intrinsic.canvas_origin")
+            && compiled.stroke_wgsl.contains("u.intrinsic.canvas_size"),
+        "the merged mirror is canvas-framed"
+    );
+    let layer_only = compile_graph(&smooth_smudge(0.0, None, 1.0)).unwrap();
+    assert!(!layer_only.compiled_brush().unwrap().samples_merged_live());
+}
+
+/// The whole point of merged sampling: the finger picks up pixels the
+/// painted layer does not own. The layer is solid black; the page shows a
+/// red bar another layer contributes. The merged dab deposits red where
+/// the layer-only dab deposits black. Runs in both frames: the mirror is
+/// canvas-framed, so an offset layer under a cropped canvas samples the
+/// same page texels.
+#[test]
+fn merged_live_picks_up_what_the_layer_lacks() {
+    let pre = canvas(|_, _| [0, 0, 0, 255]);
+    let page = canvas(|x, _| {
+        if x < 100 {
+            [220, 20, 20, 255]
+        } else {
+            [0, 0, 0, 255]
+        }
+    });
+    // The dab samples 30 px behind itself: layer-local 70 → canvas 70 at
+    // ORIGIN, canvas 83 at OFFSET — inside the bar either way.
+    let dab = ([100.0, 64.0], [30.0, 0.0]);
+    for frame in FRAMES {
+        let merged = render_merged(&merged_smudge(0.0, 1.0), frame, &pre, &page, &[dab]);
+        let layer_only = render(&smooth_smudge(0.0, None, 1.0), frame, &pre, &[dab]);
+        let m = pixel(&merged.layer, 100, 64);
+        let l = pixel(&layer_only.layer, 100, 64);
+        assert!(
+            m[0] > 80 && m[0] > m[1] + 30,
+            "{frame:?}: merged picks up the page's red: {m:?}"
+        );
+        assert!(
+            l[0] < 10,
+            "{frame:?}: the layer has nothing there to pick up: {l:?}"
+        );
+    }
+}
+
+/// The merged mirror is the page *plus the stroke so far*: dab 2 samples
+/// where dab 1 deposited and finds the deposit, not the black the frozen
+/// page has there. Distinct from reading the base alone: a mirror that
+/// forgot the grounds would deposit black.
+#[test]
+fn merged_live_reads_the_strokes_own_deposit() {
+    let pre = canvas(|_, _| [0, 0, 0, 255]);
+    let page = canvas(|x, _| {
+        if x < 40 {
+            [220, 20, 20, 255]
+        } else {
+            [0, 0, 0, 255]
+        }
+    });
+    // Dab 1 samples 30 px behind itself — canvas 20 at ORIGIN, 33 at
+    // OFFSET, inside the bar either way — and lays the red at layer-local
+    // 50; dab 2 samples exactly there.
+    let dabs = [([50.0, 64.0], [30.0, 0.0]), ([80.0, 64.0], [30.0, 0.0])];
+    for frame in FRAMES {
+        let run = render_merged(&merged_smudge(0.0, 1.0), frame, &pre, &page, &dabs);
+        let got = pixel(&run.layer, 80, 64);
+        assert!(
+            got[0] > 80 && got[0] > got[1] + 30,
+            "{frame:?}: dab 2 picked up dab 1's red deposit: {got:?}"
+        );
+    }
+}
+
+/// The snapshot runs before the dab's own dispatch, so the dab's own
+/// not-yet-committed pixels cannot feed its sample: a stationary dab
+/// deposits nothing even over a colourful page. The same ordering the
+/// same-layer mirror has, now across the canvas frame.
+#[test]
+fn merged_live_stationary_dab_deposits_nothing() {
+    let pre = canvas(|x, _| {
+        if x < 64 {
+            [40, 40, 40, 128]
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+    let page = canvas(|x, _| {
+        if x < 64 {
+            [200, 60, 30, 255]
+        } else {
+            [0, 0, 0, 0]
+        }
+    });
+    for frame in FRAMES {
+        let run = render_merged(
+            &merged_smudge(0.4, 1.0),
+            frame,
+            &pre,
+            &page,
+            &[([64.0, 64.0], [0.0, 0.0])],
+        );
+        for y in 0..SIDE {
+            for x in 0..SIDE {
+                let (got, want) = (pixel(&run.layer, x, y), pixel(&pre, x, y));
+                assert_eq!(got[3], want[3], "{frame:?}: alpha at ({x}, {y})");
+                if want[3] > 0 {
+                    assert_eq!(got, want, "{frame:?}: colour at ({x}, {y})");
+                }
+            }
+        }
+    }
 }

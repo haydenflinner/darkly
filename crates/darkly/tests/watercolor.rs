@@ -168,7 +168,7 @@ fn render_flush_groups(
 
     macro_rules! make_ctx {
         ($label:expr) => {{
-            let (scratch, pre_stroke_tex, pre_stroke_bg, source_override) =
+            let (scratch, pre_stroke_tex, pre_stroke_bg, source_override, merged_base) =
                 stroke_buffer.parts_for_brush_ctx();
             BrushGpuContext {
                 encoder: device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -197,6 +197,7 @@ fn render_flush_groups(
                     pre_stroke_texture: pre_stroke_tex,
                     pre_stroke_bind_group: pre_stroke_bg,
                     source_override,
+                    merged_base_texture: merged_base,
                 }),
                 preview: None,
                 dab_batch: DabBatch::default(),
