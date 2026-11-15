@@ -1200,7 +1200,14 @@ data: string | null, px_w: number, px_h: number, text: string | null, size: numb
 /**
  * `[r, g, b, a]` sRGB bytes.
  */
-fill: [number, number, number, number] | null, stroke: [number, number, number, number] | null, stroke_w: number | null, };
+fill: [number, number, number, number] | null, stroke: [number, number, number, number] | null, stroke_w: number | null, 
+/**
+ * Per-object affine `[a, b, c, d, e, f]` (canvas order: `x' = a·x +
+ * c·y + e`, `y' = b·x + d·y + f`), composed over the spec's own
+ * placement — a host's transform-bracket reach for rotated or
+ * scaled subtrees. Absent is identity.
+ */
+transform: [number, number, number, number, number, number] | null, };
 
 export type VoidSource = { "kind": "procedural" } | { "kind": "capture", capture: CaptureKind, } | { "kind": "image" };
 

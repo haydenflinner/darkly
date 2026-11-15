@@ -101,6 +101,12 @@ pub struct VectorObjectSpec {
     pub stroke: Option<[u8; 4]>,
     #[serde(default)]
     pub stroke_w: Option<f64>,
+    /// Per-object affine `[a, b, c, d, e, f]` (canvas order: `x' = a·x +
+    /// c·y + e`, `y' = b·x + d·y + f`), composed over the spec's own
+    /// placement — a host's transform-bracket reach for rotated or
+    /// scaled subtrees. Absent is identity.
+    #[serde(default)]
+    pub transform: Option<[f64; 6]>,
 }
 
 /// `{ id, objects }` — replace a vector layer's whole object list; the
@@ -118,8 +124,17 @@ fn solid(c: [u8; 4]) -> peniko::Brush {
 }
 
 /// Spec → [`VectorObject`]; `None` for an unknown kind (the caller skips
-/// it rather than failing the whole swap on one stray node).
+/// it rather than failing the whole swap on one stray node). A spec
+/// `transform` composes over whatever placement the kind built.
 fn spec_to_object(spec: &VectorObjectSpec) -> Option<VectorObject> {
+    let mut obj = spec_to_object_unplaced(spec)?;
+    if let Some(t) = spec.transform {
+        obj.transform = kurbo::Affine::new(t) * obj.transform;
+    }
+    Some(obj)
+}
+
+fn spec_to_object_unplaced(spec: &VectorObjectSpec) -> Option<VectorObject> {
     use kurbo::Shape;
     let (path, fill, stroke) = match spec.kind.as_str() {
         "rect" => (
