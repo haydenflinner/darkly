@@ -21,6 +21,14 @@
 //!   bytes whatever the layer's frame was when it ran (see
 //!   `compile_live`).
 //!
+//!   Two ways to read it (Krita's `SmudgeRateMode`): **smearing**
+//!   (`dulling = 0`, the default) is the per-fragment sample above.
+//!   **Dulling** (`dulling = 1`) gives every fragment of the dab the same
+//!   colour: an alpha-weighted average over the previous dab's rect,
+//!   scaled by `radius` around its centre (Krita's `SmudgeRadius`: 0
+//!   samples the centre pixel, 1 the whole rect, more reaches past it,
+//!   `KisColorSmudgeSampleUtils.h:151-153`).
+//!
 //! ## What it does
 //!
 //! Instead of a flat color (`paint_color`) or a bundle texture (`image`),
@@ -87,7 +95,7 @@ use crate::brush::wgsl::{
 };
 use crate::brush::wire::{BrushWireType, ScalarValue};
 use crate::gpu::preview::{PreviewBackdrop, PreviewStaging};
-use crate::nodegraph::{NodeRegistration, PortDef};
+use crate::nodegraph::{NodeRegistration, PortDef, UnitType};
 
 pub const TYPE_ID: &str = "clone_source";
 
@@ -116,6 +124,34 @@ pub fn register() -> BrushNodeRegistration {
                 PortDef::input("center", BrushWireType::Vec2)
                     .with_visible_when("source", [SOURCE_SNAPSHOT])
                     .with_description("Per-dab pen position in canvas pixels (wire Pen Input → Position)."),
+                // Smearing (0) vs dulling (1) on the Live arm. Read at dab
+                // time like `radius` (a wire could drive it), so the emitted
+                // WGSL carries both sample paths behind a uniform branch.
+                PortDef::input("dulling", BrushWireType::Bool)
+                    .with_range(0.0, 1.0, 0.0)
+                    .with_step(1.0)
+                    .with_label("Dulling")
+                    .with_icon("fa6-solid:eye-dropper")
+                    .with_visible_when("source", [SOURCE_LIVE])
+                    .exposed()
+                    .with_description(
+                        "Off: every pixel carries what was under it one dab back \
+                         (smearing). On: the dab carries one colour, the average of \
+                         everything under it (dulling).",
+                    ),
+                PortDef::input("radius", BrushWireType::Scalar)
+                    .with_range(0.0, 3.0, 1.0)
+                    .with_natural_range(0.0, 3.0)
+                    .with_label("Sample Radius")
+                    .with_unit(UnitType::Percent)
+                    .with_icon("fa6-solid:expand")
+                    .with_visible_when("dulling", [1])
+                    .exposed()
+                    .with_description(
+                        "How much of the dab's footprint the dulling average covers, \
+                         centred on it: 0% samples just its centre point, 100% the \
+                         whole dab, more reaches past it.",
+                    ),
                 // Aligned (0) vs anchored (1). Exposed as a Bool toggle;
                 // read from the port default and baked into the WGSL
                 // offset expression at compile time.
@@ -272,13 +308,31 @@ impl BrushNodeEvaluator for CloneSourceEvaluator {
 
     /// The Live arm reads `|motion|` beyond the dab's footprint, plus one
     /// texel for the bilinear filter's reach past `target_pos - motion`;
-    /// the Snapshot arm reads a frozen texture and needs no refresh.
+    /// the Snapshot arm reads a frozen texture and needs no refresh. A
+    /// dulling `radius` above 1 widens the sample window past the dab
+    /// rect; the window's centre (`pos - motion`) is already inside the
+    /// `|m| + 1` reach, so only the part of `radius` beyond the dab's own
+    /// radius adds reach. The dab's modulated radius is a shader-side
+    /// value, so the bound here uses the unmodulated nominal radius: an
+    /// overestimate costs mirror texels, an underestimate truncates the
+    /// average's window.
     fn read_reach(&self, ctx: &EvalContext) -> [f32; 2] {
         if !source_index_is_live(ctx.input("source").as_f32() as i32) {
             return [0.0, 0.0];
         }
         let m = ctx.input("motion").as_vec2();
-        [m[0].abs().ceil() + 1.0, m[1].abs().ceil() + 1.0]
+        let mut reach = [m[0].abs().ceil() + 1.0, m[1].abs().ceil() + 1.0];
+        if toggle_default_is_on(ctx.input("dulling").as_f32()) {
+            let radius = ctx.input("radius").as_f32().max(0.0);
+            let nominal_px = ctx.base_size
+                * crate::brush::DAB_REFERENCE_SIZE as f32
+                * 0.5
+                * crate::document::canvas_per_reference_px(ctx.dpi);
+            let extra = ((radius - 1.0).max(0.0) * nominal_px).ceil();
+            reach[0] += extra;
+            reach[1] += extra;
+        }
+        reach
     }
 
     fn compile_wgsl(&self, cctx: &CompileWgslCtx) -> Result<NodeWgsl, String> {
@@ -417,8 +471,11 @@ fn compile_snapshot(cctx: &CompileWgslCtx, wgsl: &mut NodeWgsl, out: &str) {
 fn compile_live(cctx: &CompileWgslCtx, wgsl: &mut NodeWgsl, out: &str, coverage: &str) {
     let slot = cctx.request_live_texture(LiveSource::StrokeAppearance);
     let live_fn = cctx.ident("clone_live");
+    let dull_fn = cctx.ident("clone_dull");
     let sample_ty = cctx.ident("CloneLiveSample");
     let motion = cctx.input("motion").as_vec2();
+    let dulling = cctx.input("dulling").as_f32();
+    let radius = cctx.input("radius").as_f32();
     let tex = format!("graph_tex_{slot}");
     let pre_fn = cctx.ident("clone_premul");
     // `coverage` is 0 where there is no sample (a dab that has not moved,
@@ -458,11 +515,59 @@ fn compile_live(cctx: &CompileWgslCtx, wgsl: &mut NodeWgsl, out: &str, coverage:
          \x20       return {sample_ty}(vec4<f32>(0.0, 0.0, 0.0, 0.0), 1.0);\n\
          \x20   }}\n\
          \x20   return {sample_ty}(vec4<f32>(c.rgb / c.a, c.a), 1.0);\n\
+         }}\n\
+         // Dulling: one colour for the whole dab, the alpha-weighted\n\
+         // average over the previous dab's rect (centred on `dab_pos -\n\
+         // motion`) scaled by `radius` around its centre - Krita's\n\
+         // `sampleColor` window (`KisColorSmudgeSampleUtils.h`), which is\n\
+         // the 1px centre at radius 0 and the full rect at radius 1. The\n\
+         // 8x8 stratified grid is the pass shape the watercolor pickup\n\
+         // atlas uses for the same job. `inv_radius` is the dab record's\n\
+         // `inv_radius_target_px`, so the window is the dab's *nominal*\n\
+         // rect, not the extent-inflated bbox. Off-layer taps count into\n\
+         // the average's alpha but not its colour, so a window reaching\n\
+         // past the layer edge carries thinner paint.\n\
+         fn {dull_fn}(motion: vec2<f32>, dab_pos: vec2<f32>, inv_radius: f32, radius: f32) -> {sample_ty} {{\n\
+         \x20   let none = {sample_ty}(vec4<f32>(0.0, 0.0, 0.0, 0.0), 0.0);\n\
+         \x20   if (abs(motion.x) < {STATIONARY_MOTION_PX:.6} && abs(motion.y) < {STATIONARY_MOTION_PX:.6}) {{\n\
+         \x20       return none;\n\
+         \x20   }}\n\
+         \x20   let lo = u.intrinsic.layer_offset;\n\
+         \x20   let hi = lo + vec2<i32>(u.intrinsic.layer_size);\n\
+         \x20   let half_px = max(radius / inv_radius, 0.5);\n\
+         \x20   let wlo = dab_pos - motion - vec2<f32>(half_px);\n\
+         \x20   let whi = dab_pos - motion + vec2<f32>(half_px);\n\
+         \x20   if (any(whi <= vec2<f32>(lo)) || any(wlo >= vec2<f32>(hi))) {{\n\
+         \x20       return none;\n\
+         \x20   }}\n\
+         \x20   var sum_rgb = vec3<f32>(0.0);\n\
+         \x20   var sum_a = 0.0;\n\
+         \x20   var used = 0.0;\n\
+         \x20   for (var j = 0u; j < 8u; j = j + 1u) {{\n\
+         \x20       for (var i = 0u; i < 8u; i = i + 1u) {{\n\
+         \x20           let cell = (vec2<f32>(f32(i), f32(j)) + vec2<f32>(0.5)) / 8.0;\n\
+         \x20           let lp = vec2<i32>(floor(mix(wlo, whi, cell))) - lo;\n\
+         \x20           if (all(lp >= vec2<i32>(0)) && all(lp < vec2<i32>(u.intrinsic.layer_size))) {{\n\
+         \x20               let c = textureLoad({tex}, lp, 0);\n\
+         \x20               sum_rgb = sum_rgb + c.rgb * c.a;\n\
+         \x20               sum_a = sum_a + c.a;\n\
+         \x20               used = used + 1.0;\n\
+         \x20           }}\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         \x20   if (used == 0.0) {{\n\
+         \x20       return none;\n\
+         \x20   }}\n\
+         \x20   let avg_rgb = select(vec3<f32>(0.0), sum_rgb / sum_a, sum_a > 0.0001);\n\
+         \x20   return {sample_ty}(vec4<f32>(avg_rgb, sum_a / 64.0), 1.0);\n\
          }}\n"
     );
     let sample = cctx.ident("clone_s");
     wgsl.body = format!(
-        "    let {sample} = {live_fn}(target_pos, {motion});\n\
+        "    var {sample} = {live_fn}(target_pos, {motion});\n\
+         \x20   if (f32({dulling}) >= 0.5) {{\n\
+         \x20       {sample} = {dull_fn}({motion}, d.pos, d.inv_radius_target_px, {radius});\n\
+         \x20   }}\n\
          \x20   let {out} = {sample}.color;\n\
          \x20   let {coverage} = {sample}.coverage;\n"
     );
@@ -502,9 +607,9 @@ mod tests {
         let reg = register();
         assert_eq!(reg.node.type_id, "clone_source");
         assert_eq!(reg.node.category, "texture");
-        // Five inputs (source, motion, center, mode, merged) + two outputs
-        // (color, coverage).
-        assert_eq!(reg.node.ports.len(), 7);
+        // Seven inputs (source, motion, center, dulling, radius, mode,
+        // merged) + two outputs (color, coverage).
+        assert_eq!(reg.node.ports.len(), 9);
         let port = |name: &str| {
             reg.node
                 .ports
@@ -553,13 +658,39 @@ mod tests {
         assert_eq!(merged.wire_type, BrushWireType::Bool);
         assert_eq!(merged.value.as_f32(), 0.0);
         assert!(!merged_default_is_on(merged.value.as_f32()));
+
+        // Live-arm `dulling` is a Bool toggle defaulting to smearing, and
+        // `radius` a Scalar defaulting to the full dab rect.
+        let dulling = port("dulling");
+        assert_eq!(dulling.wire_type, BrushWireType::Bool);
+        assert_eq!(dulling.value.as_f32(), 0.0);
+        assert!(!toggle_default_is_on(dulling.value.as_f32()));
+        assert_eq!(
+            visible("dulling"),
+            Some(("source".to_string(), vec![SOURCE_LIVE]))
+        );
+        let radius = port("radius");
+        assert_eq!(radius.wire_type, BrushWireType::Scalar);
+        assert_eq!(radius.value.as_f32(), 1.0);
+        assert_eq!(
+            visible("radius"),
+            Some(("dulling".to_string(), vec![1])),
+            "radius only matters when dulling reads the window"
+        );
     }
 
     /// The Live arm reaches `ceil(|m|) + 1` past the footprint per axis,
-    /// the filter's texel included; the Snapshot arm reaches nothing.
+    /// the filter's texel included; the Snapshot arm reaches nothing. A
+    /// dulling `radius` beyond the dab rect adds `ceil((radius - 1) *
+    /// nominal_radius)` so the window's far edge still lands inside the
+    /// mirror.
     #[test]
     fn read_reach_covers_the_motion_and_the_filter_on_the_live_arm_only() {
-        let reach = |source: i32, motion: [f32; 2]| {
+        let reach = |source: i32,
+                     motion: [f32; 2],
+                     dulling: f32,
+                     radius: f32,
+                     base_size: f32| {
             let ports: Vec<_> = register()
                 .node
                 .ports
@@ -567,6 +698,8 @@ mod tests {
                 .map(|p| match p.name.as_str() {
                     "source" => p.with_value(InputValue::Int(source)),
                     "motion" => p.with_value(InputValue::Vec2(motion)),
+                    "dulling" => p.with_value(InputValue::Scalar(dulling)),
+                    "radius" => p.with_value(InputValue::Scalar(radius)),
                     _ => p,
                 })
                 .collect();
@@ -578,15 +711,35 @@ mod tests {
                 lut: None,
                 stroke_seed: 0,
                 dab_index: 0,
-                base_size: 1.0,
+                base_size,
                 dabs_per_pass: 1.0,
                 dpi: crate::document::REFERENCE_DPI,
                 node_id: &node_id,
             })
         };
-        assert_eq!(reach(SOURCE_LIVE, [2.5, -3.0]), [4.0, 4.0]);
-        assert_eq!(reach(SOURCE_LIVE, [0.0, 0.0]), [1.0, 1.0]);
-        assert_eq!(reach(SOURCE_SNAPSHOT, [2.5, -3.0]), [0.0, 0.0]);
+        let smearing = |motion: [f32; 2]| reach(SOURCE_LIVE, motion, 0.0, 1.0, 1.0);
+        assert_eq!(smearing([2.5, -3.0]), [4.0, 4.0]);
+        assert_eq!(smearing([0.0, 0.0]), [1.0, 1.0]);
+        assert_eq!(reach(SOURCE_SNAPSHOT, [2.5, -3.0], 0.0, 1.0, 1.0), [0.0, 0.0]);
+        assert_eq!(
+            reach(SOURCE_SNAPSHOT, [2.5, -3.0], 1.0, 3.0, 1.0),
+            [0.0, 0.0],
+            "snapshot never needs the mirror"
+        );
+
+        // base_size 1.0 -> nominal radius 256 reference px at
+        // REFERENCE_DPI. radius <= 1 stays inside the dab rect and adds
+        // nothing; past it the window's overhang joins the reach.
+        let nominal: f32 = 256.0;
+        let dull = |radius: f32| reach(SOURCE_LIVE, [2.5, -3.0], 1.0, radius, 1.0);
+        assert_eq!(dull(1.0), [4.0, 4.0]);
+        assert_eq!(dull(0.0), [4.0, 4.0]);
+        assert_eq!(dull(1.5), [4.0 + (0.5 * nominal).ceil(), 4.0 + (0.5 * nominal).ceil()]);
+        // Modulated dabs shrink; the bound stays on the nominal radius.
+        assert_eq!(
+            reach(SOURCE_LIVE, [0.0, 0.0], 1.0, 2.0, 0.01),
+            [1.0 + (0.01 * nominal).ceil(), 1.0 + (0.01 * nominal).ceil()]
+        );
     }
 
     #[test]

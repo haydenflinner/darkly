@@ -781,3 +781,98 @@ fn a_soft_smear_over_a_dark_surface_is_the_identity() {
     }
     assert!(worst <= 1, "the surface changed by up to {worst} levels");
 }
+
+/// `paint.pickup` thins the carried pigment without thinning the
+/// displacement: the smudge still erases the red square, but the trail
+/// it leaves behind is dimmer than with full pickup.
+#[test]
+fn pickup_thins_what_the_dab_carries_without_changing_displacement() {
+    // The same smear once at pickup 1 and once at pickup 0.25.
+    let mut half = smooth_smudge(1.0, None, 0.0);
+    set(&mut half, "paint", "pickup", 0.25);
+    let run = |graph: &Graph<BrushWireType>| {
+        let dabs: Vec<([f32; 2], [f32; 2])> = (0..24)
+            .map(|i| ([40.0 + i as f32, 64.0], [1.0, 0.0]))
+            .collect();
+        render(graph, ORIGIN, &two_tone(), &dabs)
+    };
+    let full = run(&smooth_smudge(1.0, None, 0.0));
+    let thin = run(&half);
+
+    // Displacement equal: where the dabs passed, the original surface is
+    // equally gone under both pickups.
+    for (a, b) in full.layer.iter().zip(thin.layer.iter()) {
+        assert!(
+            (a & 0xFF).abs_diff(b & 0xFF) <= 8 || *a == *b,
+            "displacement diverged: {a:08x} vs {b:08x}"
+        );
+    }
+    // Carried pigment thinner: the trail right of the red square is
+    // redder under full pickup than under the thinned one.
+    let redness = |img: &[u8]| -> u32 {
+        (68..80)
+            .map(|x| pixel(img, x, 64)[0] as u32)
+            .sum::<u32>()
+    };
+    assert!(
+        redness(&full.layer) > redness(&thin.layer) + 200,
+        "pickup should thin the trail: full {} vs thin {}",
+        redness(&full.layer),
+        redness(&thin.layer)
+    );
+}
+
+/// `dulling = 1` gives the dab one colour - the average of the window
+/// under it - instead of a per-fragment copy of the mirror. Two pixels
+/// inside the same dab carry the same carried colour where smearing
+/// would give each its own.
+#[test]
+fn dulling_carries_one_averaged_colour() {
+    let mut g = smooth_smudge(1.0, None, 0.0);
+    set(&mut g, "sampler", "dulling", 1.0);
+    let dabs: Vec<([f32; 2], [f32; 2])> = (0..16)
+        .map(|i| ([56.0 + i as f32, 64.0], [1.0, 0.0]))
+        .collect();
+    let run = render(&g, ORIGIN, &ramp(), &dabs);
+    // A dab well inside the stroke: the pixels it smeared share one
+    // averaged colour, so a row across the deposited trail is flatter
+    // than the underlying ramp would smear to.
+    let spread = |img: &[u8], x0: u32, x1: u32| {
+        let px: Vec<u8> = (x0..x1).map(|x| pixel(img, x, 64)[0]).collect();
+        *px.iter().max().unwrap() as i32 - *px.iter().min().unwrap() as i32
+    };
+    // Smearing the same ramp leaves a red gradient in the trail.
+    let smear = render(&smooth_smudge(1.0, None, 0.0), ORIGIN, &ramp(), &dabs);
+    assert!(
+        spread(&run.layer, 62, 72) <= spread(&smear.layer, 62, 72),
+        "dulling should leave a flatter trail than smearing"
+    );
+}
+
+/// `radius` widens the dulling window around the previous dab's centre:
+/// the carried colour approaches the average of a larger footprint as
+/// radius grows past 1.
+#[test]
+fn radius_widens_the_dulling_window() {
+    let avg = |radius: f32| {
+        let mut g = smooth_smudge(1.0, None, 0.0);
+        set(&mut g, "sampler", "dulling", 1.0);
+        set(&mut g, "sampler", "radius", radius);
+        let dabs: Vec<([f32; 2], [f32; 2])> = (0..12)
+            .map(|i| ([56.0 + i as f32, 64.0], [1.0, 0.0]))
+            .collect();
+        render(&g, ORIGIN, &ramp(), &dabs).layer
+    };
+    // The ramp rises with x. A small window averages a neighbourhood
+    // under the dab; a bigger window reaches further left and right,
+    // pulling the mean towards the ramp's centre value. Check the trail
+    // colour at two radii differ - the window actually changed.
+    let near = avg(1.0);
+    let wide = avg(3.0);
+    let near_r = pixel(&near, 68, 64)[0] as i32;
+    let wide_r = pixel(&wide, 68, 64)[0] as i32;
+    assert_ne!(
+        near_r, wide_r,
+        "radius 1 and 3 should average different windows"
+    );
+}

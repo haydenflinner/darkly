@@ -616,6 +616,20 @@ pub fn register() -> BrushNodeRegistration {
                          with each touch. Wire the tip shape here, multiplied by the Canvas \
                          Sampler's Coverage.",
                     ),
+                PortDef::input("pickup", BrushWireType::Scalar)
+                    .with_range(0.0, 1.0, 1.0)
+                    .with_natural_range(0.0, 1.0)
+                    .with_label("Pickup")
+                    .with_unit(UnitType::Percent)
+                    .with_icon("fa6-solid:hand")
+                    .with_visible_when("mode", [MODE_MOVE])
+                    .exposed()
+                    .with_description(
+                        "Under Move: how much of what is under the finger it picks up, \
+                         thinning the dab it carries onward. Independent of Coverage, \
+                         which sets how much of the spot the dab replaces: a light \
+                         pickup still displaces paint, it just brings less of it.",
+                    ),
                 PortDef::input("wash_flow", BrushWireType::Scalar)
                     .with_range(0.0, 1.0, 1.0)
                     .with_natural_range(0.0, 1.0)
@@ -1049,14 +1063,17 @@ impl BrushNodeEvaluator for PaintEvaluator {
             // Move: the finger displaces `cov` of the pixel and leaves what
             // it brought. The pigment lerps in the ground; the coverage
             // accumulates in its channel as a bare alpha under source-over,
-            // which is `1 - prod(1 - cov_i)`.
+            // which is `1 - prod(1 - cov_i)`. `pickup` thins the carried
+            // paint only: how much the finger took, independent of how much
+            // of the pixel it displaces.
             let flow = cctx.input("build_flow").as_f32();
             let coverage = cctx.input("coverage").as_f32();
+            let pickup = cctx.input("pickup").as_f32();
             body.push_str(&format!(
                 "    let flow = clamp({flow}, 0.0, 1.0);\n\
                  \x20   let cov = clamp({coverage}, 0.0, 1.0) * flow * sel;\n\
                  \x20   if (cov == 0.0) {{\n        return;\n    }}\n\
-                 \x20   let src = rgba * flow * sel;\n"
+                 \x20   let src = rgba * clamp({pickup}, 0.0, 1.0) * flow * sel;\n"
             ));
             body.push_str(&store(GROUND_NAME, "accumulate_move(src, cov, DST)"));
             body.push_str(&store(
@@ -1140,11 +1157,16 @@ impl BrushNodeEvaluator for PaintEvaluator {
         };
         let wash_expr = cctx.input("wash_flow").as_f32();
         let build_expr = cctx.input("build_flow").as_f32();
+        let pickup_expr = if cctx.input("mode").enum_index() == MODE_MOVE {
+            cctx.input("pickup").as_f32()
+        } else {
+            "1.0".to_string()
+        };
         wgsl.body = format!(
             "    let rgba = {rgba_expr};\n\
              \x20   let wash_flow = clamp({wash_expr}, 0.0, 1.0);\n\
              \x20   let build_flow = clamp({build_expr}, 0.0, 1.0);\n\
-             \x20   return rgba * mix(wash_flow, build_flow, {build_share:.6}) * sel;\n"
+             \x20   return rgba * clamp({pickup_expr}, 0.0, 1.0) * mix(wash_flow, build_flow, {build_share:.6}) * sel;\n"
         );
         Ok(wgsl)
     }
