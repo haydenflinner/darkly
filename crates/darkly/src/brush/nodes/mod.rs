@@ -25,6 +25,7 @@ pub mod paint;
 pub mod paint_color;
 pub mod pattern;
 pub mod pen_input;
+pub mod pigment_mix;
 pub mod polygon;
 pub mod random;
 pub mod remap;
@@ -65,6 +66,7 @@ pub fn registrations() -> Vec<BrushNodeRegistration> {
     all.push(paint_color::register());
     all.push(pattern::register());
     all.push(pen_input::register());
+    all.push(pigment_mix::register());
     all.push(polygon::register());
     all.push(random::register());
     all.push(remap::register());
