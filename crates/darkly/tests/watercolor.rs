@@ -511,7 +511,15 @@ fn watercolor_mark_is_invariant_to_flush_grouping() {
 
     let dabs: Vec<(f32, f32)> = (0..59).map(|i| (20.0 + i as f32 * spacing, 64.0)).collect();
 
-    let mut means: Vec<f32> = Vec::new();
+    // The same run rendered as 1, 10, 20 and 59 dabs per flush. The mark
+    // itself is not flat: every dab stamps a randomly rotated wobble edge
+    // and ~10 dabs cover each pixel, so the interior has an intrinsic
+    // noise floor of about 5 levels even when nothing is wrong. What must
+    // be invariant is the profile *across groupings*: identical dab
+    // positions and seeds must produce the same pixels no matter how the
+    // run was batched. Grouping-dependent rendering shows up here as the
+    // profiles diverging, which is the banding this test exists for.
+    let mut profiles: Vec<Vec<u8>> = Vec::new();
     for k in [1usize, 10, 20, 59] {
         let chunks: Vec<&[(f32, f32)]> = dabs.chunks(k).collect();
         let groups: Vec<FlushGroup<'_>> = chunks.iter().map(|c| group(c)).collect();
@@ -523,23 +531,31 @@ fn watercolor_mark_is_invariant_to_flush_grouping() {
             &black,
         );
         // Sample the stroke interior only, since the caps taper by construction.
-        let profile: Vec<u8> = (25..105).map(|x| pixel(&rgba, x, 64)[0]).collect();
+        profiles.push((25..105).map(|x| pixel(&rgba, x, 64)[0]).collect());
+    }
+
+    for profile in &profiles {
         let lo = *profile.iter().min().unwrap();
         let hi = *profile.iter().max().unwrap();
         assert!(
-            hi - lo <= 4,
-            "mark must be flat along a straight run, but with {k} dab(s) per flush it \
-             varies {lo}..{hi}, which is per-flush banding: {profile:?}",
+            hi - lo <= 8,
+            "mark stays roughly uniform along a straight run, but varies {lo}..{hi}: {profile:?}",
         );
-        means.push(profile.iter().map(|&v| v as f32).sum::<f32>() / profile.len() as f32);
     }
 
-    let lo = means.iter().cloned().fold(f32::INFINITY, f32::min);
-    let hi = means.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    assert!(
-        hi - lo <= 4.0,
-        "the same dabs must mark the same regardless of flush grouping, but the mean \
-         differs by {:.1} across groupings (1/10/20/59 dabs per flush): {means:?}",
-        hi - lo,
-    );
+    let reference = &profiles[3]; // 59 dabs in one flush
+    for (k, profile) in [1usize, 10, 20].iter().zip(&profiles) {
+        let max_diff = profile
+            .iter()
+            .zip(reference)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap();
+        assert!(
+            max_diff <= 2,
+            "the same dabs must mark the same regardless of flush grouping, but {k} \
+             dabs per flush differs from one flush by up to {max_diff}: \
+             {profile:?} vs {reference:?}",
+        );
+    }
 }
