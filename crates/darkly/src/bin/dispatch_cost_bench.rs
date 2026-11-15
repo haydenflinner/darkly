@@ -704,7 +704,7 @@ impl Gpu {
             let slice = ts.map.slice(..);
             slice.map_async(wgpu::MapMode::Read, |r| r.expect("map timestamps"));
             self.wait();
-            let bytes = slice.get_mapped_range();
+            let bytes = slice.get_mapped_range().expect("map_async resolved");
             let stamps: &[u64] = bytemuck::cast_slice(&bytes);
             let ns = stamps[1].saturating_sub(stamps[0]) as f64 * ts.period_ns as f64;
             drop(bytes);
@@ -838,7 +838,7 @@ impl Gpu {
         let slice = staging.slice(..);
         slice.map_async(wgpu::MapMode::Read, |r| r.expect("map readback"));
         self.wait();
-        let data = slice.get_mapped_range().to_vec();
+        let data = slice.get_mapped_range().expect("map_async resolved").to_vec();
         staging.unmap();
         data
     }

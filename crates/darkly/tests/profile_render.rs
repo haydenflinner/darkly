@@ -22,6 +22,7 @@ fn headless_device() -> (wgpu::Device, wgpu::Queue) {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .expect("No suitable GPU adapter found (not even software fallback)");

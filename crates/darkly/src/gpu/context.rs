@@ -54,6 +54,7 @@ impl GpuContext {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .expect("Failed to find a suitable GPU adapter");
@@ -95,6 +96,7 @@ impl GpuContext {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .expect("Failed to find a suitable GPU adapter");
@@ -220,6 +222,9 @@ fn configure_surface(
         // freshest stroke on screen, so trade present-queue depth (throughput
         // headroom) for a frame less of input→display latency.
         desired_maximum_frame_latency: 1,
+        // wgpu 30 gained the opt-in color-space knob; `Auto` reproduces the
+        // historical (sRGB) behaviour darkly's pipeline already assumes.
+        color_space: wgpu::SurfaceColorSpace::Auto,
     };
     surface.configure(device, &config);
     config

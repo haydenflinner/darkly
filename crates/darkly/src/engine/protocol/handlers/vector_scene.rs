@@ -1,4 +1,4 @@
-//! `set_vector_scene`: push a fully-realized `vello::Scene` — produced
+//! `set_vector_scene`: push a fully-realized vector scene — produced
 //! outside this process (the host's graphene-lite facade renders
 //! `Graphic → render_to_vello` in its own wasm module and crosses over as
 //! `GLSC` bytes) — onto a vector layer's GPU slot.
@@ -8,10 +8,21 @@
 //! `host/graphene-lite/src/wire.rs`. The decode below is a mirror copy —
 //! a cargo dep on the facade can't cross the repo boundary, so both sides
 //! carry the format. Bump `GLSC_VERSION` there and here together.
+//!
+//! The decoded `Encoding` is then *interpreted* into a [`VectorScene`]
+//! draw list ([`VectorScene::from_encoding`]) — `vello_gpu::Scene` has no
+//! equivalent serializable encoding, so GLSC keeps its `vello_encoding`
+//! payload and Darkly replays it. That seam works for v1 but is the wrong
+//! architecture long-term: every encoding feature `vello_gpu` dropped
+//! (mask layers) or changed (glyph runs) becomes a silent degradation
+//! here. The honest end-state is compiling the facade into Darkly's wasm
+//! so scenes never serialize at all — see the migration devlog.
 
 use serde::Deserialize;
 use serde_json::json;
 use vello_encoding::{DrawTag, Encoding, Glyph, Patch, PathTag, Style, Transform};
+
+use crate::gpu::vector_scene::VectorScene;
 
 use crate::engine::protocol::{bad_payload, decode, RequestRegistration, Response};
 use crate::layer::LayerId;
@@ -50,7 +61,7 @@ pub fn registrations() -> Vec<RequestRegistration> {
 const GLSC_MAGIC: u32 = u32::from_le_bytes(*b"GLSC");
 const GLSC_VERSION: u32 = 1;
 
-fn decode_scene(bytes: &[u8]) -> Result<vello::Scene, String> {
+fn decode_scene(bytes: &[u8]) -> Result<VectorScene, String> {
     let mut r = Read::new(bytes);
     if r.u32()? != GLSC_MAGIC {
         return Err("not a GLSC stream".into());
@@ -189,9 +200,7 @@ fn decode_scene(bytes: &[u8]) -> Result<vello::Scene, String> {
             bytes.len() - r.pos
         ));
     }
-    let mut scene = vello::Scene::new();
-    *scene.encoding_mut() = enc;
-    Ok(scene)
+    VectorScene::from_encoding(&enc)
 }
 
 fn color_space_tag(v: u8) -> Result<peniko::color::ColorSpaceTag, String> {

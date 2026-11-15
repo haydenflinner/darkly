@@ -192,6 +192,7 @@ pub mod textured_void;
 pub mod transform;
 pub mod vector_content;
 pub mod vector_renderer;
+pub mod vector_scene;
 pub mod view;
 pub mod void;
 pub mod void_content;

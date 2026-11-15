@@ -19,8 +19,9 @@ use crate::layer::LayerId;
 ///   it.
 /// - `Procedural`: a [`crate::gpu::void::Void`] regenerates the texture
 ///   whenever its own dirty flag reports stale.
-/// - `Vector`: a plane-space `vello::Scene` the engine built from the
-///   document's objects is rasterized into the texture when it changes.
+/// - `Vector`: a plane-space [`crate::gpu::vector_scene::VectorScene`] draw
+///   list the engine built from the document's objects is rasterized into
+///   the texture when it changes.
 ///
 /// Regenerated content fills the canvas window by definition, so its
 /// texture is window-anchored and follows the window on resize.

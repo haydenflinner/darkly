@@ -6,20 +6,23 @@
 use crate::gpu::atlas::LayerTexture;
 use crate::gpu::compositor::Compositor;
 use crate::gpu::layer_content::{ContentBackends, LayerContent};
+use crate::gpu::vector_scene::VectorScene;
 use crate::layer::LayerId;
 
 /// Realization input for a vector-object layer: the plane-space
-/// `vello::Scene` the engine built from the document's objects, plus a
+/// [`VectorScene`] the engine built from the document's objects, plus a
 /// "needs re-rasterize" flag. The flag is set when the engine pushes a new
 /// scene (object/style/transform change) or the canvas window moves, and is
 /// cleared when the scene is rasterized: never on view zoom/pan
 /// (raster-first).
 ///
-/// The scene stays in plane coordinates; the move into the texture's frame
-/// happens at render time, so a reallocated texture re-renders it with no
-/// engine round trip.
+/// The draw list stays in plane coordinates; the move into the texture's
+/// frame happens when it is re-recorded into a `vello_gpu::Scene` at render
+/// time, so a reallocated texture re-renders it with no engine round trip.
+/// (A raw `vello_gpu::Scene` can't serve here: it's fixed-size and
+/// [`vello_gpu::Scene::reset_and_resize`] erases its draws.)
 pub(super) struct VectorContent {
-    scene: vello::Scene,
+    scene: VectorScene,
     dirty: bool,
 }
 
@@ -27,12 +30,12 @@ impl VectorContent {
     /// An empty scene, dirty so the first composite produces a fresh texture.
     fn new() -> Self {
         VectorContent {
-            scene: vello::Scene::new(),
+            scene: VectorScene::default(),
             dirty: true,
         }
     }
 
-    fn set_scene(&mut self, scene: vello::Scene) {
+    fn set_scene(&mut self, scene: VectorScene) {
         self.scene = scene;
         self.dirty = true;
     }
@@ -46,7 +49,7 @@ impl VectorContent {
         self.dirty = true;
     }
 
-    /// Rasterize the scene into `dst`. Vello submits its own command buffer.
+    /// Rasterize the scene into `dst`. vello_gpu submits its own command buffer.
     pub(super) fn regenerate(
         &self,
         device: &wgpu::Device,
@@ -62,10 +65,10 @@ impl VectorContent {
 
 impl Compositor {
     /// Allocate the per-instance GPU state for a new vector-object layer: a
-    /// canvas-window-sized `Rgba8Unorm` + `STORAGE_BINDING` texture (Vello
-    /// renders into it as a storage image) and a `LayerCache` with blend
-    /// uniforms and an empty [`LayerContent::Vector`]. The engine builds the
-    /// `vello::Scene` from the document objects and pushes it via
+    /// canvas-window-sized `Rgba8Unorm` texture (vello_gpu renders into it
+    /// as a render attachment) and a `LayerCache` with blend uniforms and an
+    /// empty [`LayerContent::Vector`]. The engine builds the
+    /// [`VectorScene`] from the document objects and pushes it via
     /// [`Self::set_vector_scene`]. Idempotent.
     ///
     /// The texture is window-sized, like a void's, so it costs a full canvas
@@ -84,7 +87,7 @@ impl Compositor {
             return;
         }
         let bounds = self.canvas_rect();
-        let layer_tex = LayerTexture::with_bounds_storage(device, bounds);
+        let layer_tex = LayerTexture::with_bounds(device, bounds);
         self.insert_content_layer(
             device,
             queue,
@@ -95,12 +98,12 @@ impl Compositor {
         self.mark_dirty();
     }
 
-    /// Replace the realized `vello::Scene` for a vector layer and mark it dirty
-    /// so the next composite re-rasterizes. The engine builds the scene from
-    /// the document's authoritative objects (text shaped by parley, paths from
-    /// kurbo) in plane coordinates: the compositor stays ignorant of fonts and
-    /// geometry. No-op if the layer wasn't ensured.
-    pub fn set_vector_scene(&mut self, layer_id: LayerId, scene: vello::Scene) {
+    /// Replace the realized [`VectorScene`] for a vector layer and mark it
+    /// dirty so the next composite re-rasterizes. The engine builds the draw
+    /// list from the document's authoritative objects (text shaped by parley,
+    /// paths from kurbo) in plane coordinates: the compositor stays ignorant
+    /// of fonts and geometry. No-op if the layer wasn't ensured.
+    pub fn set_vector_scene(&mut self, layer_id: LayerId, scene: VectorScene) {
         let Some(vc) = self
             .layer_cache
             .get_mut(&layer_id)

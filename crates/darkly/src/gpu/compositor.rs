@@ -3177,7 +3177,8 @@ impl Compositor {
         }
 
         queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        // wgpu 30 moved present off `SurfaceTexture` onto the queue.
+        queue.present(output);
         perf::time_end("present");
 
         self.finish_present(frame_tick);

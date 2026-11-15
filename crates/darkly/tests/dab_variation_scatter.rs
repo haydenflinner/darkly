@@ -107,7 +107,7 @@ fn dab_variation_offset_scatters_across_2d() {
         timeout: None,
     });
     rx.recv().unwrap().expect("map failed");
-    let data = slice.get_mapped_range();
+    let data = slice.get_mapped_range().expect("map range failed");
     let offs: &[[f32; 2]] = bytemuck::cast_slice(&data);
 
     // 2D occupancy: bin into a GRID×GRID grid over [0,1)². A diagonal-only

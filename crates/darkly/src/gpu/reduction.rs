@@ -66,6 +66,7 @@ impl PendingReduction {
         storage
             .slice(..)
             .get_mapped_range_mut()
+            .expect("mapped_at_creation")
             .copy_from_slice(bytemuck::cast_slice(seed));
         storage.unmap();
 
@@ -120,8 +121,14 @@ impl PendingReduction {
 
         match rx.try_recv().ok()? {
             Ok(()) => {
-                let words =
-                    bytemuck::cast_slice(&self.staging.slice(..).get_mapped_range()).to_vec();
+                let words = bytemuck::cast_slice(
+                    &self
+                        .staging
+                        .slice(..)
+                        .get_mapped_range()
+                        .expect("map_async resolved"),
+                )
+                .to_vec();
                 self.staging.unmap();
                 Some(Some(words))
             }

@@ -13,17 +13,16 @@ pub fn test_device() -> (wgpu::Device, wgpu::Queue) {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .expect("no GPU adapter available for tests");
 
     block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("test-device"),
         required_features: wgpu::Features::empty(),
-        // Raised to Vello's needs so headless GPU tests can realize vector
-        // (text) layers, same bump the production wasm device applies.
-        required_limits: crate::gpu::vector_renderer::required_limits(
-            wgpu::Limits::downlevel_defaults(),
-        ),
+        // vello_gpu renders via render attachments within stock limits, so
+        // the downlevel floor suffices for vector (text) layers too.
+        required_limits: wgpu::Limits::downlevel_defaults(),
         ..Default::default()
     }))
     .expect("failed to create test device")
@@ -47,6 +46,7 @@ pub fn bench_device() -> (wgpu::Device, wgpu::Queue) {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .expect("no GPU adapter available for benches");
     let adapter_features = adapter.features();

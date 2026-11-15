@@ -34,20 +34,25 @@ quote = "1"
 proc-macro2 = "1"
 
 # GPU
-wgpu = { version = "29.0", features = ["webgpu"] }
+wgpu = { version = "30.0", features = ["webgpu"] }
 
 # Vector / text: the Vello family shares one geometry/style vocabulary
 # (kurbo/peniko), so the renderer is a swappable backend behind one data model.
-# vello 0.9 pins wgpu 29.0.3, matching the workspace resolution above; keep the
-# two bumped together (vello's pipelines and our compositor share one device).
-vello = "0.10"
-# `vello::Scene::encoding_mut()` writes a `vello_encoding::Encoding` — the
-# set_vector_scene handler reconstructs one from GLSC wire bytes, so the
-# encoding crate is named directly (vello does not re-export it).
+# vello_gpu renders into the same wgpu device as the compositor; it must come
+# from this fork rev — graphite's `[patch.crates-io]` pulls the identical rev
+# for its fixes (crates.io 0.3 lacks them, 0.4 moved the render() API). Keep
+# the rev and the wgpu major bumped together.
+vello_gpu = { git = "https://github.com/haydenflinner/vello.git", rev = "4df331db2a02cb0f1cef4a0190dbbb2a00f4b075", default-features = false, features = ["wgpu", "text", "full_image_support", "blurred_rounded_rect"] }
+# vello_gpu's text path takes `glifo::Glyph` (the crate that owns glyph-run
+# rendering); it isn't re-exported, so the dep is named directly.
+glifo = { git = "https://github.com/haydenflinner/vello.git", rev = "4df331db2a02cb0f1cef4a0190dbbb2a00f4b075" }
+# GLSC v1 wire bytes are a `vello_encoding::Encoding` — the set_vector_scene
+# handler decodes them with this crate alone (no wgpu in its dep tree), then
+# re-records into a `vello_gpu::Scene`.
 vello_encoding = "0.10"
 kurbo = { version = "0.13", features = ["serde"] }
 peniko = { version = "0.6", features = ["serde"] }
-parley = "0.11"
+parley = "0.12"
 
 # Data
 bytemuck = { version = "1.13", features = ["derive"] }

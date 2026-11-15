@@ -261,7 +261,7 @@ impl ReadbackRequest {
 
     /// Strip row padding and return tightly-packed pixel data.
     fn extract_pixels(&self, slice: &wgpu::BufferSlice) -> Vec<u8> {
-        let mapped = slice.get_mapped_range();
+        let mapped = slice.get_mapped_range().expect("map_async resolved");
         let unpadded = self.unpadded_row_bytes as usize;
         let padded = self.padded_row_bytes as usize;
 

@@ -2,9 +2,10 @@
 //!
 //! This is the only text-specific code in the engine. It owns parley's font
 //! collection (fontique) and layout contexts, shapes a [`TextProps`] block into
-//! positioned glyph runs, and builds a `vello::Scene` from a layer's vector
-//! objects: text via `draw_glyphs`, paths via kurbo. Everything else about a
-//! vector layer is generic kurbo/peniko geometry the renderer consumes directly.
+//! positioned glyph runs, and builds a [`VectorScene`] draw list from a
+//! layer's vector objects: text via glyph-run ops, paths via kurbo.
+//! Everything else about a vector layer is generic kurbo/peniko geometry the
+//! renderer consumes directly.
 //!
 //! The same glyph runs would feed `vello_cpu`'s `glyph_run` unchanged, so the
 //! shaping step is renderer-independent (see the text-tool plan, §6).
@@ -22,19 +23,24 @@ use parley::{
     FontWeight, Layout, LayoutContext, LineHeight, PositionedLayoutItem, StyleProperty,
 };
 use peniko::{Brush, Color, Fill};
-use vello::Scene;
 
+use crate::gpu::vector_scene::VectorScene;
 use crate::layer::{ObjectSource, TextAlign, TextProps, TextStyle, VectorObject};
 
 /// Draw one path-like source (a baked `BezPath` or a solved spline) with the
 /// object's fill and stroke styles — the shared body of the `Path`/`Spline`
 /// scene arms.
-fn fill_stroke(scene: &mut Scene, path: &kurbo::BezPath, transform: Affine, obj: &VectorObject) {
+fn fill_stroke(
+    scene: &mut VectorScene,
+    path: &kurbo::BezPath,
+    transform: Affine,
+    obj: &VectorObject,
+) {
     if let Some(brush) = &obj.fill {
-        scene.fill(Fill::NonZero, transform, brush, None, path);
+        scene.fill(Fill::NonZero, transform, brush, path);
     }
     if let Some((stroke, brush)) = &obj.stroke {
-        scene.stroke(stroke, transform, brush, None, path);
+        scene.stroke(stroke, transform, brush, path);
     }
 }
 
@@ -211,13 +217,17 @@ impl FontRegistry {
         Some((hash.as_str(), bytes.as_slice()))
     }
 
-    /// Build a `vello::Scene` realizing every object on a vector layer. Text is
-    /// shaped here (parley) and emitted as glyph runs; every other source is
-    /// filled/stroked through its [`ObjectSource::outline`]. `layer_transform` is the layer-level gizmo affine, baked in so
-    /// the rasterization is crisp at canvas resolution (raster-first).
-    /// Splines solve their knots into the cubic chain first — same draw.
-    pub fn build_scene(&mut self, objects: &[VectorObject], layer_transform: Affine) -> Scene {
-        let mut scene = Scene::new();
+    /// Build a [`VectorScene`] draw list realizing every object on a vector
+    /// layer. Text is shaped here (parley) and recorded as glyph-run ops;
+    /// every other source is filled/stroked through its
+    /// [`ObjectSource::outline`]. `layer_transform` is the layer-level gizmo
+    /// affine, baked in so the rasterization is crisp at canvas resolution
+    /// (raster-first). Splines solve their knots into the cubic chain first —
+    /// same draw. The draw list is re-recorded into a `vello_gpu::Scene` at
+    /// rasterize time, so it survives canvas-window moves (unlike the
+    /// fixed-size scene itself).
+    pub fn build_scene(&mut self, objects: &[VectorObject], layer_transform: Affine) -> VectorScene {
+        let mut scene = VectorScene::default();
         for obj in objects {
             // Guides never paint: their outline lives on the Guides overlay
             // channel and in the pen-guide clamp, not in the layer texture.
@@ -238,8 +248,14 @@ impl FontRegistry {
         scene
     }
 
-    /// Shape `text` and emit its glyph runs into `scene` at `transform`.
-    fn draw_text(&mut self, scene: &mut Scene, text: &TextProps, transform: Affine, fill: &Brush) {
+    /// Shape `text` and record its glyph runs into `scene` at `transform`.
+    fn draw_text(
+        &mut self,
+        scene: &mut VectorScene,
+        text: &TextProps,
+        transform: Affine,
+        fill: &Brush,
+    ) {
         let layout = self.shape(text);
         for line in layout.lines() {
             for item in line.items() {
@@ -247,20 +263,26 @@ impl FontRegistry {
                     continue;
                 };
                 let run = glyph_run.run();
-                scene
-                    .draw_glyphs(run.font())
-                    .font_size(run.font_size())
-                    .normalized_coords(run.normalized_coords())
-                    .brush(fill)
-                    .transform(transform)
-                    .draw(
-                        Fill::NonZero,
-                        glyph_run.positioned_glyphs().map(|g| vello::Glyph {
-                            id: g.id,
-                            x: g.x,
-                            y: g.y,
-                        }),
-                    );
+                // parlance's `NormalizedCoord` wraps an i16; the draw list
+                // stores the raw bits (what `glifo::NormalizedCoord` aliases)
+                // so no font-types dep crosses the seam.
+                let coords: Vec<i16> = run
+                    .normalized_coords()
+                    .iter()
+                    .map(|c| c.to_bits())
+                    .collect();
+                scene.glyph_run(
+                    run.font(),
+                    run.font_size(),
+                    &coords,
+                    transform,
+                    fill,
+                    glyph_run.positioned_glyphs().map(|g| glifo::Glyph {
+                        id: g.id,
+                        x: g.x,
+                        y: g.y,
+                    }),
+                );
             }
         }
     }
@@ -442,7 +464,12 @@ mod tests {
         for line in layout.lines() {
             for item in line.items() {
                 if let PositionedLayoutItem::GlyphRun(gr) = item {
-                    return gr.run().normalized_coords().to_vec();
+                    return gr
+                        .run()
+                        .normalized_coords()
+                        .iter()
+                        .map(|c| c.to_bits())
+                        .collect();
                 }
             }
         }
@@ -713,7 +740,12 @@ mod tests {
             'outer: for line in layout.lines() {
                 for item in line.items() {
                     if let PositionedLayoutItem::GlyphRun(gr) = item {
-                        coords = gr.run().normalized_coords().to_vec();
+                        coords = gr
+                            .run()
+                            .normalized_coords()
+                            .iter()
+                            .map(|c| c.to_bits())
+                            .collect();
                         break 'outer;
                     }
                 }

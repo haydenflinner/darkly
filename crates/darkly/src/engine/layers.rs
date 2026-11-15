@@ -692,7 +692,7 @@ impl DarklyEngine {
     }
 
     /// Ensure the compositor's GPU state for a vector layer exists and rebuild
-    /// its `vello::Scene` from the document's authoritative objects. Idempotent:
+    /// its `VectorScene` from the document's authoritative objects. Idempotent:
     /// safe after any object/style/transform change, on load, and on
     /// undo/redo (`sync_compositor_layers` calls it for every vector layer).
     pub(crate) fn sync_vector_layer(&mut self, id: LayerId) {

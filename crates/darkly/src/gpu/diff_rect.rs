@@ -155,6 +155,7 @@ impl DiffRectPass {
         param_buf
             .slice(..)
             .get_mapped_range_mut()
+            .expect("mapped_at_creation")
             .copy_from_slice(bytemuck::bytes_of(&params));
         param_buf.unmap();
 

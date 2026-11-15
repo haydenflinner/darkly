@@ -162,9 +162,7 @@ impl DarklySession {
                 let ctx = GpuContext::new(
                     self.instance.clone(),
                     surface,
-                    darkly::gpu::vector_renderer::required_limits(
-                        wgpu::Limits::downlevel_webgl2_defaults(),
-                    ),
+                    wgpu::Limits::downlevel_webgl2_defaults(),
                     initial_width,
                     initial_height,
                 )
@@ -319,9 +317,7 @@ impl DarklyHandle {
             GpuContext::new(
                 instance,
                 surface,
-                darkly::gpu::vector_renderer::required_limits(
-                    wgpu::Limits::downlevel_webgl2_defaults(),
-                ),
+                wgpu::Limits::downlevel_webgl2_defaults(),
                 initial_width,
                 initial_height,
             )
