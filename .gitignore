@@ -5,6 +5,7 @@ Graphite
 /krita
 /gimp
 /gegl
+/wetpaint
 .claude
 frontend/wasm/pkg
 frontend/dist

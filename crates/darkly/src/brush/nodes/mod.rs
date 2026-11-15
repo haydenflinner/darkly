@@ -3,6 +3,7 @@
 // that exports `pub fn register() -> crate::brush::BrushNodeRegistration`,
 // or `pub fn registrations() -> Vec<BrushNodeRegistration>` for a group.
 
+pub mod abs;
 pub mod add;
 pub mod blur;
 pub mod brush_settings;
@@ -15,6 +16,9 @@ pub mod hsv;
 pub mod image;
 pub mod invert;
 pub mod liquify;
+pub mod max;
+pub mod min;
+pub mod mix_color;
 pub mod multiply;
 pub mod noise;
 pub mod paint;
@@ -24,12 +28,14 @@ pub mod pen_input;
 pub mod polygon;
 pub mod random;
 pub mod remap;
+pub mod scatter;
 pub mod split_color;
 pub mod stamp;
 pub mod subtract;
 pub mod switch;
 pub mod user_input;
 pub mod watercolor;
+pub mod wrap;
 
 use crate::brush::BrushNodeRegistration;
 
@@ -37,6 +43,7 @@ use crate::brush::BrushNodeRegistration;
 #[allow(clippy::vec_init_then_push)]
 pub fn registrations() -> Vec<BrushNodeRegistration> {
     let mut all = Vec::new();
+    all.push(abs::register());
     all.push(add::register());
     all.push(blur::register());
     all.push(brush_settings::register());
@@ -49,6 +56,9 @@ pub fn registrations() -> Vec<BrushNodeRegistration> {
     all.push(image::register());
     all.push(invert::register());
     all.push(liquify::register());
+    all.push(max::register());
+    all.push(min::register());
+    all.push(mix_color::register());
     all.push(multiply::register());
     all.push(noise::register());
     all.push(paint::register());
@@ -58,11 +68,13 @@ pub fn registrations() -> Vec<BrushNodeRegistration> {
     all.push(polygon::register());
     all.push(random::register());
     all.push(remap::register());
+    all.push(scatter::register());
     all.push(split_color::register());
     all.push(stamp::register());
     all.push(subtract::register());
     all.push(switch::register());
     all.push(user_input::register());
     all.push(watercolor::register());
+    all.push(wrap::register());
     all
 }
