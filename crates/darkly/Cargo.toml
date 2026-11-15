@@ -61,10 +61,20 @@ indexmap = { version = "2", features = ["serde"] }
 # shapes text into glyph runs; vello_gpu realizes both into the layer texture.
 vello_gpu = { workspace = true }
 glifo = { workspace = true }
-vello_encoding = { workspace = true }
 kurbo = { workspace = true }
 peniko = { workspace = true }
 parley = { workspace = true }
+
+# The graphene facade: flat prim docs → Graphic → render_to_vello, inside this
+# crate so scenes reach the compositor as Rust types (no wire encoding). The
+# pinned Graphite rev and the trims that keep its dep tree wasm-sized are at
+# the workspace root.
+core-types = { workspace = true }
+vector-types = { workspace = true }
+graphic-types = { workspace = true }
+rendering = { workspace = true }
+path-bool-nodes = { workspace = true }
+glam = { workspace = true }
 # S9 spline solving for `ObjectSource::Spline` (knots → cubics) rides on
 # `kurbo::solve_spline` — the patched kurbo fork (workspace [patch] section).
 

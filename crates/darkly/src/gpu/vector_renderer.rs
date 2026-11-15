@@ -139,18 +139,28 @@ impl VectorRenderer {
         size: &RenderSize,
         target_view: &wgpu::TextureView,
     ) -> Result<(), RenderError> {
-        let mut scene = self
+        let scene = self
             .spare
             .take()
             .unwrap_or_else(|| vello_gpu::Scene::new(size.width, size.height));
-        scene.reset_and_resize(size.width, size.height);
-        draw_list.record(&mut scene, &mut self.resources, view);
+        let (scene, images) = {
+            let mut scene = scene;
+            scene.reset_and_resize(size.width, size.height);
+            draw_list.record(scene, &mut self.resources, view)
+        };
 
         // One encoder per rasterization, like Graphite: vello_gpu stages its
         // resource uploads into the same submission.
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("vello_gpu_vector_layer"),
         });
+
+        // Bind one external texture per SceneImage the recording collected
+        // (facade-produced `Graphic` content only; op scenes record none).
+        // The uploaded textures must outlive the submit.
+        let (texture_bindings, _image_textures) =
+            bind_scene_images(device, queue, &images);
+
         let result = self.renderer.render(
             &scene,
             &mut self.resources,
@@ -160,7 +170,7 @@ impl VectorRenderer {
             size,
             target_view,
             None,
-            &TextureBindings::new(),
+            &texture_bindings,
             TargetInit::Clear(vello_gpu::ClearSettings::Viewport {
                 color: peniko::Color::TRANSPARENT,
             }),
@@ -287,6 +297,131 @@ impl VectorRenderer {
             copy_into(device, queue, &half_target, target, ox, oy);
         }
     }
+}
+
+/// Upload one texture per [`SceneImage`] a recording collected and key the
+/// [`TextureBindings`] table vello_gpu samples. Returns the bindings plus the
+/// textures, which must outlive the submit that uses them.
+///
+/// CPU images go up premultiplied (vello_gpu samples external textures
+/// premultiplied — the same premultiply Graphite's `upload_pixels` does).
+/// Per-render upload is the v1 cost model: the current prim surface emits no
+/// images at all, so Graphite's persistent `ImageTextures` cache (keyed by
+/// blob id, freed by use count) isn't worth the state yet.
+///
+/// Degradations vs Graphite's `vello_render.rs`: `SceneImage::Texture`
+/// (a GPU raster the graph rendered) needs its premultiply pass and is
+/// skipped with a warning, and images over [`MAX_LAYER_RENDER_SIZE`] are
+/// skipped rather than box-downscaled — both unreachable through today's
+/// prim doc, which has no image primitives.
+fn bind_scene_images(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    images: &[rendering::vello_scene_builder::SceneImage],
+) -> (TextureBindings, Vec<wgpu::Texture>) {
+    use rendering::vello_scene_builder::SceneImage;
+
+    let mut bindings = TextureBindings::new();
+    let mut textures = Vec::new();
+    for (id, image) in images.iter().enumerate() {
+        // (pixels, width, height, premultiply?) — straight-alpha uploads get
+        // premultiplied on the CPU, matching vello_gpu's external-texture
+        // contract.
+        let prepared: Option<(Vec<u8>, u32, u32)> = match image {
+            SceneImage::Pixels(data) => {
+                if data.format != peniko::ImageFormat::Rgba8 {
+                    log::error!("vector scene image: unsupported format {:?}", data.format);
+                    continue;
+                }
+                if data.width > u32::from(MAX_LAYER_RENDER_SIZE) || data.height > u32::from(MAX_LAYER_RENDER_SIZE) {
+                    log::warn!(
+                        "vector scene image {}x{} exceeds {}px; skipping (downscale unimplemented)",
+                        data.width,
+                        data.height,
+                        MAX_LAYER_RENDER_SIZE
+                    );
+                    continue;
+                }
+                let pixels = data.data.data();
+                match data.alpha_type {
+                    peniko::ImageAlphaType::Alpha => Some((premultiply_rgba8(&pixels), data.width, data.height)),
+                    peniko::ImageAlphaType::AlphaPremultiplied => Some((pixels.to_vec(), data.width, data.height)),
+                }
+            }
+            SceneImage::Raster(raster) => {
+                let (pixels, width, height) = raster.to_flat_u8();
+                if width > u32::from(MAX_LAYER_RENDER_SIZE) || height > u32::from(MAX_LAYER_RENDER_SIZE) {
+                    log::warn!(
+                        "vector scene raster {width}x{height} exceeds {MAX_LAYER_RENDER_SIZE}px; skipping (downscale unimplemented)"
+                    );
+                    continue;
+                }
+                Some((premultiply_rgba8(&pixels), width, height))
+            }
+            SceneImage::Texture(texture) => {
+                // A premultiplied copy of the source texture is what
+                // Graphite draws; that pass isn't ported (no prim emits
+                // GPU-raster content yet).
+                log::warn!(
+                    "vector scene image is a GPU texture ({}x{}); external-texture premultiply unimplemented, skipping",
+                    texture.width(),
+                    texture.height()
+                );
+                None
+            }
+        };
+        let Some((pixels, width, height)) = prepared else {
+            continue;
+        };
+        if width == 0 || height == 0 {
+            continue;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("vello_gpu_scene_image"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TEXTURE_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            texture.as_image_copy(),
+            &pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            texture.size(),
+        );
+        bindings.insert(
+            vello_gpu::TextureId(id as u64),
+            texture.create_view(&wgpu::TextureViewDescriptor::default()),
+        );
+        textures.push(texture);
+    }
+    (bindings, textures)
+}
+
+/// Straight-alpha RGBA8 → premultiplied RGBA8 (the `(c*a + 127)/255`
+/// rounding Graphite's uploader uses).
+fn premultiply_rgba8(pixels: &[u8]) -> Vec<u8> {
+    pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|px| {
+            let a = px[3] as u32;
+            let pre = |c: u8| ((c as u32 * a + 127) / 255) as u8;
+            [pre(px[0]), pre(px[1]), pre(px[2]), px[3]]
+        })
+        .collect()
 }
 
 /// A fresh scratch render target for one split half.

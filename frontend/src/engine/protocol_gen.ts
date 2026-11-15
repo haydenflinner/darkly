@@ -1128,7 +1128,7 @@ variations?: { [key in string]: number }, features?: { [key in string]: number }
 
 export type SetVectorObjectsReq = { id: number, objects: Array<VectorObjectSpec>, };
 
-export type SetVectorSceneReq = { id: number, };
+export type SetVectorSceneReq = { id: number, doc: JsonValue, };
 
 export type SetViewTransformReq = { pan_x: number, pan_y: number, zoom: number, rotation: number, mirror_h: boolean, screen_w: number, screen_h: number, dpr: number, };
 
@@ -1210,6 +1210,8 @@ fill: [number, number, number, number] | null, stroke: [number, number, number, 
  * scaled subtrees. Absent is identity.
  */
 transform: [number, number, number, number, number, number] | null, };
+
+export type VectorSceneStatsReq = { doc: JsonValue, };
 
 export type VoidSource = { "kind": "procedural" } | { "kind": "capture", capture: CaptureKind, } | { "kind": "image" };
 
@@ -1445,6 +1447,7 @@ export type RequestKind =
     | 'update_vector_object_transform'
     | 'update_void_transform'
     | 'vector_object_info'
+    | 'vector_scene_stats'
     | 'void_transform_info'
     | 'warm_vector_renderer'
     ;
@@ -1677,6 +1680,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'update_vector_object_transform',
     'update_void_transform',
     'vector_object_info',
+    'vector_scene_stats',
     'void_transform_info',
     'warm_vector_renderer',
 ] as const;
@@ -1893,7 +1897,7 @@ export interface EngineApi {
     setTextContent(req: SetTextContentReq): void;
     setTextStyle(req: SetTextStyleReq): void;
     setVectorObjects(req: SetVectorObjectsReq): Promise<{ ids: number[] }>;
-    setVectorScene(req: SetVectorSceneReq, bytes: Uint8Array): Promise<{ ok: true }>;
+    setVectorScene(req: SetVectorSceneReq): Promise<{ ok: true }>;
     setViewTransform(req: SetViewTransformReq): void;
     setViewportBg(req: SetViewportBgReq): void;
     setVoidParams(req: SetVoidParamsReq): void;
@@ -1917,6 +1921,7 @@ export interface EngineApi {
     updateVectorObjectTransform(req: UpdateVectorObjectTransformReq): void;
     updateVoidTransform(req: UpdateVoidTransformReq): void;
     vectorObjectInfo(req: ObjectRefReq): Promise<{ ox: number, oy: number, w: number, h: number, mode: number, matrix: number[] } | null>;
+    vectorSceneStats(req: VectorSceneStatsReq): Promise<string>;
     voidTransformInfo(req: VoidTransformInfoReq): Promise<VoidTransformInfoResp | null>;
     warmVectorRenderer(): void;
 }
@@ -2127,7 +2132,7 @@ export function makeApi(t: Transport): EngineApi {
         setTextContent: (req) => t.postFF('set_text_content', req),
         setTextStyle: (req) => t.postFF('set_text_style', req),
         setVectorObjects: (req) => t.request('set_vector_objects', req),
-        setVectorScene: (req, bytes) => t.request('set_vector_scene', req, bytes),
+        setVectorScene: (req) => t.request('set_vector_scene', req),
         setViewTransform: (req) => t.postFF('set_view_transform', req),
         setViewportBg: (req) => t.postFF('set_viewport_bg', req),
         setVoidParams: (req) => t.postFF('set_void_params', req),
@@ -2151,6 +2156,7 @@ export function makeApi(t: Transport): EngineApi {
         updateVectorObjectTransform: (req) => t.postFF('update_vector_object_transform', req),
         updateVoidTransform: (req) => t.postFF('update_void_transform', req),
         vectorObjectInfo: (req) => t.request('vector_object_info', req),
+        vectorSceneStats: (req) => t.request('vector_scene_stats', req),
         voidTransformInfo: (req) => t.request('void_transform_info', req),
         warmVectorRenderer: () => t.postFF('warm_vector_renderer'),
     };

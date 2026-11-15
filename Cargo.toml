@@ -46,13 +46,23 @@ vello_gpu = { git = "https://github.com/haydenflinner/vello.git", rev = "4df331d
 # vello_gpu's text path takes `glifo::Glyph` (the crate that owns glyph-run
 # rendering); it isn't re-exported, so the dep is named directly.
 glifo = { git = "https://github.com/haydenflinner/vello.git", rev = "4df331db2a02cb0f1cef4a0190dbbb2a00f4b075" }
-# GLSC v1 wire bytes are a `vello_encoding::Encoding` — the set_vector_scene
-# handler decodes them with this crate alone (no wgpu in its dep tree), then
-# re-records into a `vello_gpu::Scene`.
-vello_encoding = "0.10"
 kurbo = { version = "0.13", features = ["serde"] }
 peniko = { version = "0.6", features = ["serde"] }
 parley = "0.12"
+
+# Graphene facade: Graphite's vector/type libraries and its `rendering` crate
+# (Graphic → VelloSceneBuilder → vello_gpu::Scene + SceneImage table), compiled
+# into this wasm so prims never serialize. Pinned to our fork's
+# `dsa/graphene-darkly` branch — Graphite HEAD 47cc1c4 plus dep trims
+# (dyn-any/reqwest off, image codecs to png+jpeg, wgpu strict_asserts off).
+# `rendering` pulls text-nodes/brush-types/graphene-resource transitively; only
+# the listed crates are named directly.
+core-types = { git = "https://github.com/haydenflinner/Graphite", rev = "b88857fda1ddc06d9ac64cd17a85d2fc477f78e3" }
+vector-types = { git = "https://github.com/haydenflinner/Graphite", rev = "b88857fda1ddc06d9ac64cd17a85d2fc477f78e3" }
+graphic-types = { git = "https://github.com/haydenflinner/Graphite", rev = "b88857fda1ddc06d9ac64cd17a85d2fc477f78e3" }
+rendering = { git = "https://github.com/haydenflinner/Graphite", rev = "b88857fda1ddc06d9ac64cd17a85d2fc477f78e3" }
+path-bool-nodes = { git = "https://github.com/haydenflinner/Graphite", rev = "b88857fda1ddc06d9ac64cd17a85d2fc477f78e3" }
+glam = { version = "0.34", default-features = false, features = ["std", "scalar-math", "all-types"] }
 
 # Data
 bytemuck = { version = "1.13", features = ["derive"] }
@@ -109,6 +119,18 @@ console_log = "1"
 # S9 spline fork: knot-interpolating `Spline`/`solve_spline` on kurbo types.
 [patch.crates-io]
 kurbo = { path = "../../kurbo/kurbo" }
+# The graphene crates dep `vello_gpu = "0.3"` from crates.io; patch the whole
+# family onto the same fork rev darkly deps directly, or two `vello_gpu`
+# sources compile and `Scene`/`Resources` don't unify. `vello_common` and
+# `vello_gpu_shaders` ride the same patch for the same reason (graphite's own
+# [patch] doesn't apply here — patches only hold at the build's workspace
+# root). Same URL and rev as the direct dep above.
+vello_gpu = { git = "https://github.com/haydenflinner/vello.git", rev = "4df331db2a02cb0f1cef4a0190dbbb2a00f4b075" }
+vello_common = { git = "https://github.com/haydenflinner/vello.git", rev = "4df331db2a02cb0f1cef4a0190dbbb2a00f4b075" }
+vello_gpu_shaders = { git = "https://github.com/haydenflinner/vello.git", rev = "4df331db2a02cb0f1cef4a0190dbbb2a00f4b075" }
+# graphene's `rendering` touches usvg only in two never-called SVG helpers;
+# the stub keeps fontdb/rustybuzz/resvg out of the wasm (see stubs/usvg).
+usvg = { path = "stubs/usvg" }
 
 [profile.dev]
 opt-level = 1

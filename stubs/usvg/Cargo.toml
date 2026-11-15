@@ -1,0 +1,9 @@
+[package]
+name = "usvg"
+version = "0.49.0"
+edition = "2021"
+license = "MPL-2.0"
+description = "Compile-surface stub for [patch.crates-io]: graphene's `rendering` crate uses usvg only in two helpers darkly never calls (SVG path/transform conversion). The real usvg drags fontdb + rustybuzz + the SVG parse stack into the wasm; none of it is reachable through the facade. See the workspace [patch] in darkly's root Cargo.toml."
+
+[features]
+default = []

@@ -20,6 +20,8 @@ pub mod document;
 pub mod engine;
 pub mod format;
 pub mod gpu;
+/// The graphene facade: flat prim docs → Graphite `Graphic` vector scenes.
+pub mod graphene;
 pub mod layer;
 pub mod mask;
 pub mod nodegraph;
