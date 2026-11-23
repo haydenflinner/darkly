@@ -672,7 +672,7 @@ impl DarklyEngine {
     fn ensure_layer_covers(
         &mut self,
         layer_id: LayerId,
-        current_extent: crate::coord::CanvasRect,
+        _current_extent: crate::coord::CanvasRect,
         needed: crate::coord::CanvasRect,
     ) {
         // The stroke buffer's pre-stroke snapshot fills its grown area with
@@ -687,9 +687,6 @@ impl DarklyEngine {
             None => return,
         };
 
-        let dx = (current_extent.origin.x - new_extent.origin.x) as u32;
-        let dy = (current_extent.origin.y - new_extent.origin.y) as u32;
-
         // Re-anchor the StrokeBuffer scratch + pre-stroke snapshot. The
         // bind groups inside the StrokeBuffer reference the old textures
         // and are rebuilt against the new ones.
@@ -698,10 +695,7 @@ impl DarklyEngine {
                 stroke.buffer.grow_preserving(
                     &self.gpu.device,
                     encoder,
-                    new_extent.width,
-                    new_extent.height,
-                    dx,
-                    dy,
+                    new_extent,
                     self.brush_pipelines.canvas_copy_layout(),
                     target_format,
                 );

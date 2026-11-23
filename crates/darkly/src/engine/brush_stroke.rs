@@ -357,13 +357,12 @@ impl DarklyEngine {
         // the canvas, dabs landing on off-canvas pixels are saved and
         // restored correctly on undo.
         let layer_tex = self.compositor.node_texture(layer_id)?;
-        let layer_extent = layer_tex.layer_extent();
+        let layer_extent = layer_tex.canvas_extent();
         // The terminal decides what its scratch holds: colour for most
         // brushes, a displacement field for liquify.
         let mut buffer = StrokeBuffer::new(
             &self.gpu.device,
-            layer_extent.width,
-            layer_extent.height,
+            layer_extent,
             &self.brush_pipelines,
             engine.scratch_format(),
             engine.dab_pass(),

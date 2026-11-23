@@ -78,8 +78,13 @@ impl PreviewTarget {
             view_formats: &[],
         });
         let layer_view = layer_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let stroke_buffer =
-            StrokeBuffer::new(device, width, height, pipelines, scratch_format, dab_pass);
+        let stroke_buffer = StrokeBuffer::new(
+            device,
+            crate::coord::CanvasRect::from_xywh(0, 0, width, height),
+            pipelines,
+            scratch_format,
+            dab_pass,
+        );
         Self {
             width,
             height,

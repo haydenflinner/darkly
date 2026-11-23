@@ -54,7 +54,7 @@
 use crate::brush::node::DabPass;
 use crate::brush::pipeline::CanvasCopyLayouts;
 use crate::brush::texture_source::LiveSource;
-use crate::coord::LayerRect;
+use crate::coord::{CanvasRect, LayerRect};
 
 /// Per-dab read-mirror initial size.  1×1 is the smallest legal wgpu
 /// texture; the first dab's footprint will lazy-grow it.  Picking a small
@@ -73,6 +73,12 @@ pub struct Scratch {
     write_bind_group: wgpu::BindGroup,
     write_w: u32,
     write_h: u32,
+    /// Canvas position of write-side texel `(0, 0)`: the frame's anchor.
+    /// The write side, channels and layer-framed appearance mirrors all
+    /// cover `origin .. origin + (write_w, write_h)`; today that equals
+    /// the painted layer's extent and a sub-extent stroke buffer shifts
+    /// it. Scratch-local coordinates are canvas minus `origin`.
+    origin: [i32; 2],
 
     // --- Read mirror (footprint-sized, lazy-grown) ---
     read_mirror_texture: wgpu::Texture,
@@ -221,8 +227,9 @@ struct StrokeChannels {
 }
 
 impl Scratch {
-    /// Allocate a new scratch.  Write side starts at `(layer_w, layer_h)`;
-    /// read mirror starts at `1×1` and grows lazily on first dab.
+    /// Allocate a new scratch covering `extent` in canvas coordinates:
+    /// the write side starts at `extent`'s size, anchored at its origin;
+    /// the read mirror starts at `1×1` and grows lazily on first dab.
     ///
     /// `layouts` are the canvas-copy layouts the brush composite shaders
     /// bind the read mirror, the write side (the composite shader's
@@ -234,8 +241,7 @@ impl Scratch {
     /// needs it bound as read-write storage.
     pub fn new(
         device: &wgpu::Device,
-        layer_w: u32,
-        layer_h: u32,
+        extent: CanvasRect,
         layouts: &CanvasCopyLayouts,
         format: wgpu::TextureFormat,
         pass: DabPass,
@@ -249,7 +255,7 @@ impl Scratch {
         });
 
         let (write_texture, write_view) =
-            create_write_texture(device, layer_w, layer_h, format, pass);
+            create_write_texture(device, extent.width, extent.height, format, pass);
         let write_bind_group = layout.bind(
             device,
             "scratch-write-bg",
@@ -270,8 +276,9 @@ impl Scratch {
             write_texture,
             write_view,
             write_bind_group,
-            write_w: layer_w,
-            write_h: layer_h,
+            write_w: extent.width,
+            write_h: extent.height,
+            origin: [extent.x0(), extent.y0()],
             read_mirror_texture,
             read_mirror_view,
             read_mirror_bind_group,
@@ -437,6 +444,18 @@ impl Scratch {
         self.channels
             .as_ref()
             .map_or_else(Vec::new, |c| c.declared.iter().map(|d| d.format).collect())
+    }
+
+    /// Canvas position of write-side texel `(0, 0)`: translate a canvas
+    /// rect into scratch-local coordinates by subtracting it.
+    pub fn origin(&self) -> [i32; 2] {
+        self.origin
+    }
+
+    /// The canvas rect the write side (and every frame-following side)
+    /// covers.
+    pub fn write_extent(&self) -> CanvasRect {
+        CanvasRect::from_xywh(self.origin[0], self.origin[1], self.write_w, self.write_h)
     }
 
     pub fn write_texture(&self) -> &wgpu::Texture {
@@ -629,31 +648,40 @@ impl Scratch {
         self.read_origin_cache = Some([origin_x, origin_y]);
     }
 
-    /// Reallocate the write side at `(new_w, new_h)`, copying existing
-    /// contents into the new texture at `(dst_offset_x, dst_offset_y)` so
-    /// in-flight stroke pixels survive a layer auto-grow.  Rebuilds the
-    /// write bind group.  Resets the read-origin cache because the layer-
-    /// local coordinate frame has shifted.
+    /// Reallocate the write side covering `new_extent` in canvas
+    /// coordinates, copying existing contents into the new texture at
+    /// their canvas-anchored offset so in-flight stroke pixels survive a
+    /// reframe.  Rebuilds the write bind group.  Resets the read-origin
+    /// cache because the write-local coordinate frame has shifted.
     ///
     /// The read mirror is **not** touched: its size is footprint-driven,
-    /// not layer-driven, and the layer growth doesn't change what footprint
+    /// not layer-driven, and the frame shift doesn't change what footprint
     /// the next dab will request.  The next `sync_read_mirror` call will
     /// re-copy in the new write-side coordinate frame anyway.
     pub fn grow_write(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-        new_w: u32,
-        new_h: u32,
-        dst_offset_x: u32,
-        dst_offset_y: u32,
+        new_extent: CanvasRect,
     ) {
-        if new_w == self.write_w && new_h == self.write_h && dst_offset_x == 0 && dst_offset_y == 0
+        // Callers only grow or reframe the covered rect outward: the new
+        // extent's origin never sits inside the old frame.
+        debug_assert!(
+            new_extent.x0() <= self.origin[0] && new_extent.y0() <= self.origin[1],
+            "grow_write re-anchors outward only: {new_extent:?} vs {:?}",
+            self.origin
+        );
+        let dst_offset_x = (self.origin[0] - new_extent.x0()).max(0) as u32;
+        let dst_offset_y = (self.origin[1] - new_extent.y0()).max(0) as u32;
+        if new_extent.width == self.write_w
+            && new_extent.height == self.write_h
+            && dst_offset_x == 0
+            && dst_offset_y == 0
         {
             return;
         }
-        let target_w = new_w.max(self.write_w);
-        let target_h = new_h.max(self.write_h);
+        let target_w = new_extent.width.max(self.write_w);
+        let target_h = new_extent.height.max(self.write_h);
 
         let (new_texture, new_view) =
             create_write_texture(device, target_w, target_h, self.format, self.pass);
@@ -730,6 +758,7 @@ impl Scratch {
         self.write_bind_group = new_bind_group;
         self.write_w = target_w;
         self.write_h = target_h;
+        self.origin = [self.origin[0] - dst_offset_x as i32, self.origin[1] - dst_offset_y as i32];
         // The cache origin was in the OLD write-side frame.  After the
         // rebase, the same origin value points at different pixels; drop it.
         self.read_origin_cache = None;
@@ -940,8 +969,7 @@ mod tests {
         );
         let scratch = Scratch::new(
             &device,
-            32,
-            16,
+            CanvasRect::from_xywh(0, 0, 32, 16),
             pipelines.canvas_copy_layouts(),
             format,
             pass,
@@ -967,7 +995,11 @@ mod tests {
 
         let mut encoder = device.create_command_encoder(&Default::default());
         scratch.clear_to_transparent(&mut encoder);
-        scratch.grow_write(&device, &mut encoder, 48, 40, 16, 24);
+        scratch.grow_write(
+            &device,
+            &mut encoder,
+            CanvasRect::from_xywh(-16, -24, 48, 40),
+        );
         queue.submit([encoder.finish()]);
         device
             .poll(wgpu::PollType::wait_indefinitely())
@@ -1103,7 +1135,11 @@ mod tests {
         assert_eq!(size(&scratch, merged), canvas);
 
         let mut encoder = device.create_command_encoder(&Default::default());
-        scratch.grow_write(&device, &mut encoder, 48, 40, 16, 24);
+        scratch.grow_write(
+            &device,
+            &mut encoder,
+            CanvasRect::from_xywh(-16, -24, 48, 40),
+        );
         queue.submit([encoder.finish()]);
         assert_eq!(size(&scratch, layer), (48, 40));
         assert_eq!(size(&scratch, merged), canvas);

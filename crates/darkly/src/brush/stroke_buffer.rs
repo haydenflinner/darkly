@@ -83,7 +83,10 @@ pub struct StrokeBuffer {
 }
 
 impl StrokeBuffer {
-    /// Create a new stroke buffer matching the given canvas dimensions.
+    /// Create a new stroke buffer covering `extent` in canvas
+    /// coordinates: the scratch and the pre-stroke snapshot share that
+    /// frame. Today every caller passes the paint target's extent; a
+    /// sub-extent buffer covers only the stroke's dab union instead.
     ///
     /// `pipelines` provides the canvas-copy layouts that the embedded
     /// `Scratch` needs for its read-mirror, write and channel bind groups.
@@ -95,16 +98,15 @@ impl StrokeBuffer {
     /// and a compute terminal commits its packed ground onto.
     pub fn new(
         device: &wgpu::Device,
-        width: u32,
-        height: u32,
+        extent: CanvasRect,
         pipelines: &BrushPipelines,
         scratch_format: wgpu::TextureFormat,
         dab_pass: DabPass,
     ) -> Self {
+        let (width, height) = (extent.width, extent.height);
         let scratch = Scratch::new(
             device,
-            width,
-            height,
+            extent,
             pipelines.canvas_copy_layouts(),
             scratch_format,
             dab_pass,
@@ -187,13 +189,18 @@ impl StrokeBuffer {
         }
         self.scratch = Scratch::new(
             device,
-            self.width,
-            self.height,
+            self.extent(),
             pipelines.canvas_copy_layouts(),
             scratch_format,
             dab_pass,
         );
         self.dab_pass = dab_pass;
+    }
+
+    /// The canvas rect the buffer's frame-sized textures cover: the
+    /// scratch write side's frame, which the pre-stroke snapshot shares.
+    pub fn extent(&self) -> CanvasRect {
+        self.scratch.write_extent()
     }
 
     /// The embedded scratch (write + read mirror).  Borrow mutably: the
@@ -439,34 +446,30 @@ impl StrokeBuffer {
     /// target (of `target_format`) grows with, [`crate::gpu::default_fill`]:
     /// the target had nothing there before the stroke, so that default is
     /// its pre-stroke value, and the commit composites onto it.
-    #[allow(clippy::too_many_arguments)]
     pub fn grow_preserving(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-        new_w: u32,
-        new_h: u32,
-        dst_offset_x: u32,
-        dst_offset_y: u32,
+        new_extent: CanvasRect,
         canvas_copy: &CanvasCopyLayout,
         target_format: wgpu::TextureFormat,
     ) {
-        if new_w == self.width && new_h == self.height && dst_offset_x == 0 && dst_offset_y == 0 {
+        let extent = self.extent();
+        let dst_offset_x = (extent.x0() - new_extent.x0()).max(0) as u32;
+        let dst_offset_y = (extent.y0() - new_extent.y0()).max(0) as u32;
+        if new_extent.width == self.width
+            && new_extent.height == self.height
+            && dst_offset_x == 0
+            && dst_offset_y == 0
+        {
             return;
         }
-        let target_w = new_w.max(self.width);
-        let target_h = new_h.max(self.height);
+        let target_w = new_extent.width.max(self.width);
+        let target_h = new_extent.height.max(self.height);
 
         // Grow the writable scratch atomically via Scratch: caller can't
         // forget either side.  Read mirror stays footprint-sized.
-        self.scratch.grow_write(
-            device,
-            encoder,
-            target_w,
-            target_h,
-            dst_offset_x,
-            dst_offset_y,
-        );
+        self.scratch.grow_write(device, encoder, new_extent);
 
         let new_pre_stroke_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("pre-stroke-snapshot"),
