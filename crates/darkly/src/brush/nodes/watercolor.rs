@@ -1112,6 +1112,7 @@ impl BrushNodeEvaluator for WatercolorEvaluator {
                 law: CommitLaw::Deposit,
             },
             stroke.pre_stroke_bind_group,
+            stroke.scratch.write_extent(),
             opacity,
             gpu.blend_mode,
         );

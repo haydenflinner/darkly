@@ -102,16 +102,14 @@ fn render_clone(p: &CloneParams) -> Vec<u8> {
         &darkly::gpu::selection::selection_mask_bgl(&device),
     );
     let mut runner: BrushGraphRunner = compile_graph(&graph).expect("clone compiles");
+    let layer_rect = CanvasRect::from_xywh(p.origin[0], p.origin[1], W, W);
     let mut stroke_buffer = StrokeBuffer::new(
         &device,
-        W,
-        W,
+        layer_rect,
         &pipelines,
         runner.scratch_format(),
         runner.dab_pass(),
     );
-
-    let layer_rect = CanvasRect::from_xywh(p.origin[0], p.origin[1], W, W);
     let pre_stroke = GpuPaintTarget::from_canvas_texture(
         &layer_texture,
         &layer_view,

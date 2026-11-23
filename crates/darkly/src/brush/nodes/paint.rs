@@ -1069,6 +1069,7 @@ impl BrushNodeEvaluator for PaintEvaluator {
                 law: law.commit_law(),
             },
             stroke.pre_stroke_bind_group,
+            stroke.scratch.write_extent(),
             opacity,
             gpu.blend_mode,
         );

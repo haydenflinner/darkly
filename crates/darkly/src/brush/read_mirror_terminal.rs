@@ -643,6 +643,7 @@ pub fn commit(gpu: &mut BrushGpuContext) {
         gpu.pipelines,
         stroke.scratch.write_view(),
         stroke.scratch.write_texture(),
+        stroke.scratch.write_extent(),
     );
 }
 

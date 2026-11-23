@@ -144,8 +144,7 @@ fn harness(initial: &[u8], graph: Graph<BrushWireType>) -> Harness {
     let runner = compile_graph(&graph).expect("graph compiles");
     let stroke_buffer = StrokeBuffer::new(
         &device,
-        CANVAS,
-        CANVAS,
+        darkly::coord::CanvasRect::from_xywh(0, 0, CANVAS, CANVAS),
         &pipelines,
         runner.scratch_format(),
         runner.dab_pass(),
@@ -386,8 +385,7 @@ fn builtin_rough_ink_brush_renders_within_declared_bbox() {
     let runner = compile_graph(&graph).expect("Rough Ink compiles");
     let stroke_buffer = StrokeBuffer::new(
         &device,
-        CANVAS,
-        CANVAS,
+        darkly::coord::CanvasRect::from_xywh(0, 0, CANVAS, CANVAS),
         &pipelines,
         runner.scratch_format(),
         runner.dab_pass(),

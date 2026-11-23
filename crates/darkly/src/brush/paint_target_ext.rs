@@ -26,6 +26,7 @@
 
 use crate::brush::composite_pipeline::{CommitLaw, CompositePipeline, CompositeUniforms};
 use crate::brush::pipeline::BrushPipelines;
+use crate::coord::CanvasRect;
 use crate::gpu::paint_target::GpuPaintTarget;
 
 /// The accumulations a stroke commits, by slot.
@@ -61,6 +62,12 @@ pub trait BrushPaintTargetExt {
     ///
     /// Selection is already baked into the scratch by the per-dab
     /// composites, so the commit never samples it.
+    ///
+    /// `frame` is the canvas-anchored rect the foregrounds and the
+    /// background share: their texel `(0, 0)` sits at `frame`'s origin.
+    /// The commit quad covers `frame` and nothing else; today every caller
+    /// passes the target's own extent, and a sub-extent stroke buffer
+    /// commits only the region its textures cover.
     fn commit_brush_dab(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -68,6 +75,7 @@ pub trait BrushPaintTargetExt {
         queue: &wgpu::Queue,
         foregrounds: CommitForegrounds<'_>,
         pre_stroke_bg: &wgpu::BindGroup,
+        frame: CanvasRect,
         opacity: f32,
         blend_mode: u32,
     );
@@ -75,9 +83,11 @@ pub trait BrushPaintTargetExt {
     /// Populate an RGBA8 pre-stroke snapshot from this paint target.
     ///
     /// `snapshot_view` and `snapshot_texture` reference the snapshot's RGBA8
-    /// destination. Source and destination must share `(width, height)`:
-    /// the brush's `StrokeBuffer` already sizes its pre-stroke snapshot to
-    /// match the paint target's pixel dimensions.
+    /// destination, and `frame` is its canvas-anchored extent: the copy
+    /// reads the target's pixels under `frame` into the matching texels.
+    /// An R8 source still fills the whole snapshot through its broadcast
+    /// pass, so it must cover the whole target (R8 strokes keep
+    /// full-extent buffers).
     fn save_pre_stroke_snapshot(
         &self,
         device: &wgpu::Device,
@@ -85,13 +95,16 @@ pub trait BrushPaintTargetExt {
         brush_pipelines: &BrushPipelines,
         snapshot_view: &wgpu::TextureView,
         snapshot_texture: &wgpu::Texture,
+        frame: CanvasRect,
     );
 
     /// Commit a fully-rendered RGBA8 scratch onto the paint target with no
     /// blending. Used by liquify-style terminals that produce the final
-    /// pixel state in the scratch and need a straight overwrite. RGBA8 dest
-    /// is a hardware copy; R8 dest goes through a fragment shader (the GPU
-    /// drops G/B/A on the R8 target).
+    /// pixel state in the scratch and need a straight overwrite. `frame`
+    /// is the canvas-anchored extent the scratch covers; only that region
+    /// of the target is written. RGBA8 dest is a hardware copy; R8 dest
+    /// goes through a fragment shader (the GPU drops G/B/A on the R8
+    /// target) and still expects frame to cover it whole.
     fn commit_scratch_blit(
         &self,
         device: &wgpu::Device,
@@ -99,6 +112,7 @@ pub trait BrushPaintTargetExt {
         brush_pipelines: &BrushPipelines,
         scratch_view: &wgpu::TextureView,
         scratch_texture: &wgpu::Texture,
+        frame: CanvasRect,
     );
 }
 
@@ -110,6 +124,7 @@ impl BrushPaintTargetExt for GpuPaintTarget<'_> {
         queue: &wgpu::Queue,
         foregrounds: CommitForegrounds<'_>,
         pre_stroke_bg: &wgpu::BindGroup,
+        frame: CanvasRect,
         opacity: f32,
         blend_mode: u32,
     ) {
@@ -127,14 +142,16 @@ impl BrushPaintTargetExt for GpuPaintTarget<'_> {
         };
 
         let canvas_ext = self.canvas_extent();
+        debug_assert!(
+            canvas_ext.contains(frame),
+            "commit frame {frame:?} must lie inside the target {canvas_ext:?}"
+        );
         let layer_w = canvas_ext.width as f32;
         let layer_h = canvas_ext.height as f32;
-        let layer_off_x = canvas_ext.x0() as f32;
-        let layer_off_y = canvas_ext.y0() as f32;
         let uniforms = CompositeUniforms {
-            origin: [layer_off_x, layer_off_y],
-            size: [layer_w, layer_h],
-            target_offset: [layer_off_x, layer_off_y],
+            origin: [frame.x0() as f32, frame.y0() as f32],
+            size: [frame.width as f32, frame.height as f32],
+            target_offset: [canvas_ext.x0() as f32, canvas_ext.y0() as f32],
             target_size: [layer_w, layer_h],
             uv_min: [0.0, 0.0],
             uv_max: [1.0, 1.0],
@@ -175,31 +192,58 @@ impl BrushPaintTargetExt for GpuPaintTarget<'_> {
         brush_pipelines: &BrushPipelines,
         snapshot_view: &wgpu::TextureView,
         snapshot_texture: &wgpu::Texture,
+        frame: CanvasRect,
     ) {
-        let extent = self.layer_extent();
+        let canvas_ext = self.canvas_extent();
         if self.format() != wgpu::TextureFormat::R8Unorm {
             // Same-format hardware copy: fast path for raster layers.
+            // `frame` is the snapshot's canvas-anchored extent; the covered
+            // part of it maps to source texels on the layer and to
+            // destination texels on the snapshot.
+            debug_assert!(
+                canvas_ext.contains(frame),
+                "snapshot frame {frame:?} must lie inside the target {canvas_ext:?}"
+            );
+            let Some(covered) = frame.intersect(canvas_ext) else {
+                return;
+            };
             encoder.copy_texture_to_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: self.texture(),
                     mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
+                    origin: wgpu::Origin3d {
+                        x: (covered.x0() - canvas_ext.x0()) as u32,
+                        y: (covered.y0() - canvas_ext.y0()) as u32,
+                        z: 0,
+                    },
                     aspect: wgpu::TextureAspect::All,
                 },
                 wgpu::TexelCopyTextureInfo {
                     texture: snapshot_texture,
                     mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
+                    origin: wgpu::Origin3d {
+                        x: (covered.x0() - frame.x0()) as u32,
+                        y: (covered.y0() - frame.y0()) as u32,
+                        z: 0,
+                    },
                     aspect: wgpu::TextureAspect::All,
                 },
                 wgpu::Extent3d {
-                    width: extent.width,
-                    height: extent.height,
+                    width: covered.width,
+                    height: covered.height,
                     depth_or_array_layers: 1,
                 },
             );
             return;
         }
+
+        // An R8 broadcast fills the whole snapshot from the whole target:
+        // correct only while an R8 stroke keeps a full-extent buffer.
+        debug_assert_eq!(
+            frame, canvas_ext,
+            "R8 broadcast needs the snapshot frame to cover the target"
+        );
+        let extent = self.layer_extent();
 
         // R8 source → RGBA8 destination via broadcast render pass.
         let _ = snapshot_texture; // referenced only on the same-format path
@@ -237,31 +281,54 @@ impl BrushPaintTargetExt for GpuPaintTarget<'_> {
         brush_pipelines: &BrushPipelines,
         scratch_view: &wgpu::TextureView,
         scratch_texture: &wgpu::Texture,
+        frame: CanvasRect,
     ) {
-        let extent = self.layer_extent();
+        let canvas_ext = self.canvas_extent();
         if self.format() != wgpu::TextureFormat::R8Unorm {
-            // Same-format hardware copy: preserves today's path for layers.
+            // Same-format hardware copy: the covered part of `frame` maps
+            // to source texels on the scratch and to destination texels on
+            // the layer.
+            let Some(covered) = frame.intersect(canvas_ext) else {
+                return;
+            };
             encoder.copy_texture_to_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: scratch_texture,
                     mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
+                    origin: wgpu::Origin3d {
+                        x: (covered.x0() - frame.x0()) as u32,
+                        y: (covered.y0() - frame.y0()) as u32,
+                        z: 0,
+                    },
                     aspect: wgpu::TextureAspect::All,
                 },
                 wgpu::TexelCopyTextureInfo {
                     texture: self.texture(),
                     mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
+                    origin: wgpu::Origin3d {
+                        x: (covered.x0() - canvas_ext.x0()) as u32,
+                        y: (covered.y0() - canvas_ext.y0()) as u32,
+                        z: 0,
+                    },
                     aspect: wgpu::TextureAspect::All,
                 },
                 wgpu::Extent3d {
-                    width: extent.width,
-                    height: extent.height,
+                    width: covered.width,
+                    height: covered.height,
                     depth_or_array_layers: 1,
                 },
             );
             return;
         }
+
+        // The R8 passthrough writes the whole target from the whole
+        // scratch: correct only while an R8 stroke keeps a full-extent
+        // buffer.
+        debug_assert_eq!(
+            frame, canvas_ext,
+            "R8 passthrough needs the scratch frame to cover the target"
+        );
+        let extent = self.layer_extent();
 
         // RGBA8 scratch → R8 dest via passthrough render pass; GPU writes
         // only `.r` to the R8 target.

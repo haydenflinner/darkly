@@ -105,8 +105,7 @@ fn run_begin_stroke(graph: &Graph<BrushWireType>, setup: Setup) -> Vec<u8> {
     let mut runner: BrushGraphRunner = compile_graph(graph).expect("brush compiles");
     let mut stroke_buffer = StrokeBuffer::new(
         &device,
-        W,
-        H,
+        darkly::coord::CanvasRect::from_xywh(0, 0, W, H),
         &pipelines,
         runner.scratch_format(),
         runner.dab_pass(),

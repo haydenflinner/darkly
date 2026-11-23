@@ -207,8 +207,7 @@ fn render_inner(
     let mut runner = compile_graph(graph).expect("brush compiles");
     let mut stroke_buffer = StrokeBuffer::new(
         &device,
-        SIDE,
-        SIDE,
+        extent,
         &pipelines,
         runner.scratch_format(),
         runner.dab_pass(),

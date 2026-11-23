@@ -87,10 +87,11 @@ struct VertexOutput {
     return commit_fragment(in, wash, build);
 }
 
-// Packed foregrounds, loaded at the fragment's own texel: the scratch is
-// layer-sized and the quad is the layer, so the texel is exact.
+// Packed foregrounds, loaded at the fragment's own texel. The quad covers
+// the grounds' frame, which can cover less than the target: the packed
+// texel is the fragment's canvas position minus the frame's anchor.
 @fragment fn fs_packed(in: VertexOutput) -> @location(0) vec4f {
-    let px = vec2<i32>(in.position.xy);
+    let px = vec2<i32>(in.position.xy + u.target_offset - floor(u.origin));
     let wash = unpack4x8unorm(textureLoad(t_wash_packed, px, 0).r);
     let build = unpack4x8unorm(textureLoad(t_build_packed, px, 0).r);
     return commit_fragment(in, wash, build);

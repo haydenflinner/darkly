@@ -275,10 +275,11 @@ impl StrokeBuffer {
         runs: RegionRuns,
     ) -> (UndoRegionEntry, ReadbackRequest) {
         use crate::brush::paint_target_ext::BrushPaintTargetExt;
-        let canvas_extent = target.canvas_extent();
+        let buffer_extent = self.extent();
         let format = target.format();
-        // The snapshot is aligned to the target: its texel `(x, y)` holds the
-        // target's layer-local pixel `(x, y)`.
+        // The snapshot covers the buffer's frame: its texel `(x, y)` holds
+        // the canvas pixel `buffer_extent.origin + (x, y)`. The runs must
+        // lie inside it; `snapshot_runs` asserts that.
         let capture = |pixels: &wgpu::Texture, encoder: &mut wgpu::CommandEncoder| {
             region_scratch.capture_region(
                 encoder,
@@ -287,7 +288,7 @@ impl StrokeBuffer {
                 format,
                 &CanvasFrame {
                     texture: pixels,
-                    canvas_extent,
+                    canvas_extent: buffer_extent,
                 },
                 runs,
             )
@@ -295,10 +296,9 @@ impl StrokeBuffer {
         if format == self.pre_stroke_texture.format() {
             return capture(&self.pre_stroke_texture, encoder);
         }
-        debug_assert_eq!(
-            (self.width, self.height),
-            (canvas_extent.width, canvas_extent.height),
-            "the pre-stroke snapshot is aligned to the paint target"
+        debug_assert!(
+            target.canvas_extent().contains(buffer_extent),
+            "the pre-stroke frame {buffer_extent:?} must lie inside the paint target"
         );
         let (narrow, narrow_view) = crate::gpu::create_texture_with_view(
             device,
@@ -316,6 +316,7 @@ impl StrokeBuffer {
                 pipelines,
                 &self.pre_stroke_view,
                 &self.pre_stroke_texture,
+                buffer_extent,
             );
         capture(&narrow, encoder)
     }
@@ -332,11 +333,10 @@ impl StrokeBuffer {
         target: &GpuPaintTarget<'_>,
     ) {
         use crate::brush::paint_target_ext::BrushPaintTargetExt;
-        let extent = target.layer_extent();
-        debug_assert_eq!(
-            (self.width, self.height),
-            (extent.width, extent.height),
-            "the pre-stroke snapshot is aligned to the paint target"
+        let buffer_extent = self.extent();
+        debug_assert!(
+            target.canvas_extent().contains(buffer_extent),
+            "the pre-stroke frame {buffer_extent:?} must lie inside the paint target"
         );
         target.commit_scratch_blit(
             device,
@@ -344,6 +344,7 @@ impl StrokeBuffer {
             pipelines,
             &self.pre_stroke_view,
             &self.pre_stroke_texture,
+            buffer_extent,
         );
     }
 
@@ -366,6 +367,7 @@ impl StrokeBuffer {
             brush_pipelines,
             &self.pre_stroke_view,
             &self.pre_stroke_texture,
+            self.extent(),
         );
     }
 
@@ -576,6 +578,13 @@ fn freeze_source(
     // The view only serves the R8-broadcast capture pass; sampling at
     // flush time creates its own binding view from the texture.
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    source.save_pre_stroke_snapshot(device, encoder, brush_pipelines, &view, &texture);
+    source.save_pre_stroke_snapshot(
+        device,
+        encoder,
+        brush_pipelines,
+        &view,
+        &texture,
+        source.canvas_extent(),
+    );
     texture
 }
