@@ -433,10 +433,34 @@ pub fn evaluate_gpu<T: ReadMirrorTerminal>(
         read_half[1].max(write_half[1]),
     ];
 
+    // Grow the buffer's frame over the dab's footprint and read region
+    // before it queues: the flush's mirror copy reads the write side
+    // inside that region, so it must lie inside the frame. For a
+    // layer-bounded terminal (liquify's full-layer warp field) the
+    // frame already covers everything and this is a no-op.
+    if let Some(needed) = canvas_ext.clamp_f32(
+        position[0] - read_half[0],
+        position[1] - read_half[1],
+        position[0] + read_half[0],
+        position[1] + read_half[1],
+    ) {
+        gpu.stroke
+            .as_mut()
+            .expect("read-mirror evaluate observed stroke resources")
+            .ensure_covers(
+                gpu.device,
+                &mut gpu.encoder,
+                gpu.pipelines,
+                needed,
+            );
+    }
+
     // Pre-compute `copy_origin` (canvas-space top-left of the mirror
     // snapshot) with the same formula `prepare_dab_canvas_copy` will use
     // at flush time; the per-dab record carries it so the shader can map
-    // `target_pos` into mirror UVs.
+    // `target_pos` into mirror UVs. The layer extent stands in for the
+    // buffer's frame here: the frame covers `needed`, so its near edge
+    // never clamps the read region differently.
     let read_x0 = (position[0] - read_half[0]).max(layer_x0);
     let read_y0 = (position[1] - read_half[1]).max(layer_y0);
     let copy_origin = [read_x0.floor(), read_y0.floor()];
@@ -508,10 +532,12 @@ pub fn flush_dabs<T: ReadMirrorTerminal>(gpu: &mut BrushGpuContext) {
         .stroke
         .as_ref()
         .expect("read-mirror flush_dabs requires stroke resources");
-    let paint_target = &stroke.paint_target;
-    let canvas_ext = paint_target.canvas_extent();
-    let layer_offset = [canvas_ext.x0(), canvas_ext.y0()];
-    let layer_size = [canvas_ext.width, canvas_ext.height];
+    // The instanced draw targets the write side, whose addressable
+    // frame is the buffer's extent: `layer_offset`/`layer_size` and the
+    // viewport all name it, not the paint target's.
+    let buffer_ext = stroke.scratch.write_extent();
+    let layer_offset = [buffer_ext.x0(), buffer_ext.y0()];
+    let layer_size = [buffer_ext.width, buffer_ext.height];
 
     let mut uniform_bytes: Vec<u8> = Vec::with_capacity(MAX_UNIFORM_BYTES);
     pack_intrinsic_uniforms(

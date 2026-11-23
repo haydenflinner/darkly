@@ -240,7 +240,7 @@ fn render_inner(
 
     macro_rules! make_ctx {
         () => {{
-            let (scratch, pre_stroke_tex, pre_stroke_bg, source_override, merged_base) =
+            let (scratch, pre_stroke, source_override, merged_base) =
                 stroke_buffer.parts_for_brush_ctx();
             BrushGpuContext {
                 encoder: device.create_command_encoder(&Default::default()),
@@ -258,8 +258,8 @@ fn render_inner(
                 stroke: Some(StrokeResources {
                     scratch,
                     paint_target: target(),
-                    pre_stroke_texture: pre_stroke_tex,
-                    pre_stroke_bind_group: pre_stroke_bg,
+                    pre_stroke,
+                    
                     source_override,
                     merged_base_texture: merged_base,
                 }),

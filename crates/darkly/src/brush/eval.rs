@@ -261,7 +261,17 @@ fn apply_lifecycle(
     region: Option<crate::coord::LayerRect>,
 ) {
     use super::node::Lifecycle;
-    let Some(stroke) = &gpu.stroke else { return };
+    // The lifecycle also decides how a growth band initialises: a
+    // seed-from-pre-stroke terminal (its commit blits the whole scratch
+    // back) needs bands seeded from the snapshot; a clear terminal needs
+    // them transparent, which is what it writes anyway. `ensure_covers`
+    // reads the flag.
+    let Some(stroke) = gpu.stroke.as_mut() else {
+        return;
+    };
+    stroke
+        .scratch
+        .set_seeded_baseline(lifecycle == Lifecycle::SeedScratchFromPreStroke);
     match (lifecycle, region) {
         (Lifecycle::None, _) => {}
         (Lifecycle::ClearScratchToTransparent, None) => {
@@ -275,12 +285,12 @@ fn apply_lifecycle(
         (Lifecycle::SeedScratchFromPreStroke, None) => {
             stroke
                 .scratch
-                .seed_from_pre_stroke(&mut gpu.encoder, stroke.pre_stroke_texture);
+                .seed_from_pre_stroke(&mut gpu.encoder, stroke.pre_stroke.texture());
         }
         (Lifecycle::SeedScratchFromPreStroke, Some(rect)) => {
             stroke.scratch.seed_region_from_pre_stroke(
                 &mut gpu.encoder,
-                stroke.pre_stroke_texture,
+                stroke.pre_stroke.texture(),
                 rect,
             );
         }
@@ -910,6 +920,16 @@ impl BrushGraphRunner {
     pub fn dab_pass(&self) -> super::node::DabPass {
         self.terminal_registration()
             .map(|reg| reg.dab_pass)
+            .unwrap_or_default()
+    }
+
+    /// How much of the paint target the stroke buffer must cover: the
+    /// terminal's declared
+    /// [`scratch_bounds`](crate::brush::node::BrushNodeRegistration::scratch_bounds).
+    /// A terminal-less graph keeps the layer-sized default.
+    pub fn scratch_bounds(&self) -> super::node::ScratchBounds {
+        self.terminal_registration()
+            .map(|reg| reg.scratch_bounds)
             .unwrap_or_default()
     }
 

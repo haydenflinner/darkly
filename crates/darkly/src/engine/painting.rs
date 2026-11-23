@@ -663,10 +663,14 @@ impl DarklyEngine {
     /// [`StrokeOp::required_coverage`], so how far an op reaches is the op's
     /// own business; this is only the machinery that makes room for it.
     ///
-    /// On growth, the StrokeBuffer scratch and RegionScratch scratch are both
-    /// re-anchored to the new layer's local coordinate system so canvas-
-    /// space pre-stroke pixels remain in the right place; bind groups
-    /// referencing the old textures are rebuilt by their owners. Layer
+    /// The stroke buffer is canvas-anchored too, so a layer grow does not
+    /// move its pixels. A `ScratchBounds::Layer` terminal's buffer is
+    /// re-covered to the new extent below (it must keep covering the
+    /// whole layer); a dab-bounded buffer's own `ensure_covers` grows it
+    /// the next time a dab needs room, capturing the band the layer
+    /// just gained, whose pixels still hold their pre-stroke value.
+    /// The RegionScratch scratch
+    /// is re-anchored to the new layer's local coordinate system. Layer
     /// blend uniforms are refreshed so the next composite pass sees the
     /// new offset/size.
     fn ensure_layer_covers(
@@ -675,11 +679,6 @@ impl DarklyEngine {
         _current_extent: crate::coord::CanvasRect,
         needed: crate::coord::CanvasRect,
     ) {
-        // The stroke buffer's pre-stroke snapshot fills its grown area with
-        // what the target grows with, which depends on the target's format.
-        let Some(target_format) = self.compositor.node_texture(layer_id).map(|t| t.format()) else {
-            return;
-        };
         // Grow the stroke target itself: raster grows the raster, a mask
         // stroke grows the mask (no host coupling).
         let new_extent = match self.grow_node_to_fit(layer_id, needed) {
@@ -687,19 +686,29 @@ impl DarklyEngine {
             None => return,
         };
 
-        // Re-anchor the StrokeBuffer scratch + pre-stroke snapshot. The
-        // bind groups inside the StrokeBuffer reference the old textures
-        // and are rebuilt against the new ones.
-        if let Some(stroke) = self.brush_stroke.as_mut() {
-            self.gpu.encode("stroke-buffer-grow", |encoder| {
-                stroke.buffer.grow_preserving(
-                    &self.gpu.device,
-                    encoder,
-                    new_extent,
-                    self.brush_pipelines.canvas_copy_layout(),
-                    target_format,
-                );
-            });
+        // A terminal that reads the whole layer keeps a layer-sized
+        // buffer: re-cover it to the new extent, capturing the grown
+        // bands (still their pre-stroke fill). A dab-bounded buffer
+        // stays bounded — the dab's own `ensure_covers` grows it as
+        // coverage requires.
+        if self.active_stroke_layer == Some(layer_id)
+            && self.brush_stroke.as_ref().is_some_and(|s| {
+                s.engine.scratch_bounds() == crate::brush::node::ScratchBounds::Layer
+            })
+        {
+            if let Some(layer_tex) = self.compositor.node_texture(layer_id) {
+                let target = GpuPaintTarget::from_node(layer_tex, self.doc.canvas_rect());
+                let stroke = self.brush_stroke.as_mut().unwrap();
+                self.gpu.encode("stroke-buffer-cover-growth", |encoder| {
+                    stroke.buffer.ensure_covers(
+                        &self.gpu.device,
+                        encoder,
+                        &self.brush_pipelines,
+                        &target,
+                        new_extent,
+                    );
+                });
+            }
         }
 
         // The brush engine's bbox metadata (`save_points`, `checkpoint_ring`)
@@ -909,7 +918,7 @@ impl DarklyEngine {
             // No node texture, no stroke: the engine is dropped unstored.
             // Scratch initialisation is the terminal's responsibility (via
             // `runner.begin_stroke`), run by the stroke's first flush.
-            let Some(buffer) = self.open_stroke_buffer(layer_id, &engine) else {
+            let Some(buffer) = self.open_stroke_buffer(layer_id, &engine, [x, y]) else {
                 return;
             };
             self.brush_stroke = Some(BrushStroke {
@@ -977,7 +986,6 @@ impl DarklyEngine {
             self.brush_stroke = Some(stroke);
             return;
         };
-        let paint_target = setup.paint_target;
         let BrushStroke {
             engine,
             buffer: stroke_buffer,
@@ -986,13 +994,13 @@ impl DarklyEngine {
 
         // Refresh the clone source frame every flush: the frozen
         // snapshot's rect when one exists (cross-layer / merged),
-        // else the paint target's *current* extent, which re-reads
-        // mid-stroke layer growth, so same-layer clone keeps tracking
-        // `grow_preserving`'s re-anchored snapshot.
+        // else the pre-stroke snapshot's frame, which is the buffer's
+        // extent (a same-layer clone reads the snapshot at its anchor
+        // offset, so its UV frame is the snapshot's).
         engine.set_clone_source_frame(
             stroke_buffer
                 .source_snapshot_frame()
-                .unwrap_or_else(|| paint_target.canvas_extent()),
+                .unwrap_or_else(|| stroke_buffer.extent()),
         );
 
         // Dabs render into the scratch, then the terminal's `commit` hook
@@ -1041,10 +1049,22 @@ impl DarklyEngine {
                 // copies the covered part back. One submission for
                 // both.
                 {
+                    // The reset region is write-side local: the slot's
+                    // frame and the scratch share the buffer's frame, so
+                    // translate through it rather than the target's (the
+                    // two differ for a dab-bounded buffer).
+                    let reset = cp.reset.and_then(|r| {
+                        let e = stroke_buffer.extent();
+                        r.intersect(e).map(|c| {
+                            crate::coord::LayerRect::from_xywh(
+                                (c.x0() - e.x0()) as u32,
+                                (c.y0() - e.y0()) as u32,
+                                c.width,
+                                c.height,
+                            )
+                        })
+                    });
                     let mut gpu_ctx = setup.ctx(stroke_buffer, "brush-rewind");
-                    let reset = cp
-                        .reset
-                        .and_then(|r| paint_target.canvas_frame().canvas_to_layer_rect(r));
                     if let Some(reset) = reset {
                         engine.begin_stroke(&mut gpu_ctx, Some(reset));
                     }

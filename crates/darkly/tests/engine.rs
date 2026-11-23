@@ -1196,6 +1196,45 @@ fn brush_stroke_off_canvas_pixel_lands_correctly() {
     );
 }
 
+/// A dab-bounded stroke buffer: the stroke opens its scratch around the
+/// first dab and grows it under each dab's coverage, so a small dab on a
+/// large layer never allocates the layer's whole extent.
+#[test]
+fn dab_bounded_buffer_covers_only_stroke_coverage() {
+    use darkly::coord::CanvasRect;
+
+    let (cw, ch) = (2048u32, 2048u32);
+    let mut engine = test_engine(cw, ch);
+    let layer_id = engine.add_raster_layer(None);
+
+    paint_at(&mut engine, layer_id, 100.0, 100.0, 1.0, 0.0, 0.0);
+
+    let bounds = engine.layer_bounds(layer_id).expect("layer exists");
+    let extent = engine
+        .test_last_stroke_buffer_extent()
+        .expect("stroke kept its buffer");
+    assert!(
+        extent.width < bounds.width / 4 && extent.height < bounds.height / 4,
+        "a small dab's buffer {extent:?} should stay far below the layer {bounds:?}"
+    );
+    assert!(
+        extent.contains(CanvasRect::from_xywh(90, 90, 20, 20)),
+        "the buffer {extent:?} must still cover the dab's neighbourhood"
+    );
+
+    // And the paint still landed.
+    let pixels = engine.test_readback_layer(layer_id);
+    let mut hit = false;
+    for dy in 0..64u32 {
+        for dx in 0..64u32 {
+            if alpha_at(&pixels, bounds.width, 100 - 32 + dx, 100 - 32 + dy) > 0 {
+                hit = true;
+            }
+        }
+    }
+    assert!(hit, "the dab's paint should land at (100, 100)");
+}
+
 /// Negative-direction growth on the X axis: a dab at canvas (-100, h/2)
 /// must shift the layer's `offset_x` more negative by at least one chunk
 /// (256), expand the width to cover, and preserve the original content.

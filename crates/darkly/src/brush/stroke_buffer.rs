@@ -14,7 +14,7 @@
 use crate::brush::node::DabPass;
 use crate::brush::pipeline::{BrushPipelines, CanvasCopyLayout};
 use crate::brush::scratch::Scratch;
-use crate::coord::CanvasRect;
+use crate::coord::{CanvasRect, LayerRect};
 use crate::gpu::atlas::CanvasFrame;
 use crate::gpu::paint_target::GpuPaintTarget;
 use crate::gpu::readback::ReadbackRequest;
@@ -46,18 +46,122 @@ pub struct SourceSnapshot {
 /// active terminal node's lifecycle hooks (`begin_stroke` / `commit`). This
 /// keeps the engine free of terminal-type branching: swapping in a warp or
 /// smudge terminal doesn't require editing this file.
+/// The pre-stroke snapshot: the paint target's pixels as they were when
+/// the stroke opened, over the buffer's frame. Always `Rgba8Unorm` (an
+/// R8 mask target is broadcast into it at capture).
+pub struct PreStroke {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    /// Bind group over `texture`, compatible with the canvas copy BGL so
+    /// the composite pipeline can read it as the background.
+    bind_group: wgpu::BindGroup,
+    /// Nearest sampler the bind group carries; kept so a regrow rebinds
+    /// without allocating another.
+    sampler: wgpu::Sampler,
+}
+
+impl PreStroke {
+    fn new(device: &wgpu::Device, canvas_copy: &CanvasCopyLayout, width: u32, height: u32) -> Self {
+        let texture = pre_stroke_texture(device, width, height);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("pre-stroke-sampler"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let bind_group = build_pre_stroke_bind_group(device, canvas_copy, &view, &sampler);
+        Self {
+            texture,
+            view,
+            bind_group,
+            sampler,
+        }
+    }
+
+    pub fn texture(&self) -> &wgpu::Texture {
+        &self.texture
+    }
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.view
+    }
+    pub fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
+
+    /// Reallocate at `new`'s dimensions, keeping the old contents at
+    /// their canvas-anchored offset inside `new`'s frame and rebuilding
+    /// the view and bind group. `new` must enclose `old`. The bands
+    /// `new \ old` are left uninitialised; the caller captures them
+    /// from the paint target.
+    fn grow(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        canvas_copy: &CanvasCopyLayout,
+        old: CanvasRect,
+        new: CanvasRect,
+    ) {
+        debug_assert!(
+            new.contains(old),
+            "pre-stroke reframe only grows: {new:?} vs {old:?}"
+        );
+        let texture = pre_stroke_texture(device, new.width, new.height);
+        let dst = (
+            (old.x0() - new.x0()) as u32,
+            (old.y0() - new.y0()) as u32,
+        );
+        if old.width > 0 && old.height > 0 {
+            crate::gpu::blit_region(
+                encoder,
+                &self.texture,
+                (0, 0),
+                &texture,
+                dst,
+                old.width,
+                old.height,
+            );
+        }
+        self.texture = texture;
+        self.view = self
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.bind_group =
+            build_pre_stroke_bind_group(device, canvas_copy, &self.view, &self.sampler);
+    }
+}
+
+fn pre_stroke_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("pre-stroke-snapshot"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        // RENDER_ATTACHMENT is required when the source layer is an R8
+        // mask: `GpuPaintTarget::save_pre_stroke_snapshot` runs a
+        // broadcast render pass instead of `copy_texture_to_texture`.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
+}
+
 pub struct StrokeBuffer {
     /// Writable stroke scratch + per-dab read mirror, managed as one unit.
     /// The R/W hazard workaround is encapsulated inside `Scratch`.
     scratch: Scratch,
 
-    /// Snapshot of the layer before the stroke started.
-    pre_stroke_texture: wgpu::Texture,
-    pre_stroke_view: wgpu::TextureView,
-
-    /// Bind group for the pre-stroke texture, compatible with the canvas copy BGL
-    /// so the existing composite pipeline can read it as the background.
-    pre_stroke_bind_group: wgpu::BindGroup,
+    /// Snapshot of the layer before the stroke started, over the
+    /// buffer's frame.
+    pre_stroke: PreStroke,
 
     /// Frozen texture for the brush's sampled source slot, or `None` when
     /// the pre-stroke snapshot is the source (same-layer clone) or the
@@ -77,16 +181,15 @@ pub struct StrokeBuffer {
     /// How the stroke's terminal dispatches dabs; with the scratch's format,
     /// what decides whether a scratch suits a given brush.
     dab_pass: DabPass,
-
-    width: u32,
-    height: u32,
 }
 
 impl StrokeBuffer {
     /// Create a new stroke buffer covering `extent` in canvas
     /// coordinates: the scratch and the pre-stroke snapshot share that
-    /// frame. Today every caller passes the paint target's extent; a
-    /// sub-extent buffer covers only the stroke's dab union instead.
+    /// frame. The engine passes either the paint target's extent or,
+    /// for a `ScratchBounds::Dabs` terminal, a small rect around the
+    /// stroke's first position that [`Self::ensure_covers`] grows as
+    /// the stroke's coverage does.
     ///
     /// `pipelines` provides the canvas-copy layouts that the embedded
     /// `Scratch` needs for its read-mirror, write and channel bind groups.
@@ -112,53 +215,14 @@ impl StrokeBuffer {
             dab_pass,
         );
 
-        let pre_stroke_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("pre-stroke-snapshot"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            // RENDER_ATTACHMENT is required when the source layer is an R8
-            // mask: `GpuPaintTarget::save_pre_stroke_snapshot` runs a
-            // broadcast render pass instead of `copy_texture_to_texture`.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let pre_stroke_view =
-            pre_stroke_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let pre_stroke_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("pre-stroke-sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-
-        let pre_stroke_bind_group = build_pre_stroke_bind_group(
-            device,
-            pipelines.canvas_copy_layout(),
-            &pre_stroke_view,
-            &pre_stroke_sampler,
-        );
+        let pre_stroke = PreStroke::new(device, pipelines.canvas_copy_layout(), width, height);
 
         Self {
             scratch,
-            pre_stroke_texture,
-            pre_stroke_view,
-            pre_stroke_bind_group,
+            pre_stroke,
             source_snapshot: None,
             merged_base: None,
             dab_pass,
-            width,
-            height,
         }
     }
 
@@ -215,25 +279,23 @@ impl StrokeBuffer {
         &self.scratch
     }
 
-    /// Split-borrow accessor for `BrushGpuContext` construction: returns
-    /// a mutable reference to the scratch alongside immutable references
-    /// to the pre-stroke resources, the optional source snapshot, and the
-    /// optional merged-appearance base, all from one `&mut self` borrow.
-    /// The borrow checker permits this because the function body proves
-    /// the borrows are disjoint (different fields).
+    /// Split-borrow accessor for `BrushGpuContext` construction: mutable
+    /// references to the scratch and the pre-stroke snapshot alongside
+    /// immutable references to the optional source snapshot and merged
+    /// appearance base, all from one `&mut self` borrow. The borrow
+    /// checker permits this because the function body proves the borrows
+    /// are disjoint (different fields).
     pub fn parts_for_brush_ctx(
         &mut self,
     ) -> (
         &mut Scratch,
-        &wgpu::Texture,
-        &wgpu::BindGroup,
+        &mut PreStroke,
         Option<&wgpu::Texture>,
         Option<&wgpu::Texture>,
     ) {
         (
             &mut self.scratch,
-            &self.pre_stroke_texture,
-            &self.pre_stroke_bind_group,
+            &mut self.pre_stroke,
             self.source_snapshot.as_ref().map(|cs| &cs.texture),
             self.merged_base.as_ref(),
         )
@@ -241,20 +303,25 @@ impl StrokeBuffer {
 
     /// The pre-stroke snapshot texture.
     pub fn pre_stroke_texture(&self) -> &wgpu::Texture {
-        &self.pre_stroke_texture
+        &self.pre_stroke.texture
     }
 
     /// The pre-stroke snapshot view: the destination of `save_pre_stroke_snapshot`
     /// when the source is an R8 mask (which goes through a render pass instead
     /// of `copy_texture_to_texture`).
     pub fn pre_stroke_view(&self) -> &wgpu::TextureView {
-        &self.pre_stroke_view
+        &self.pre_stroke.view
     }
 
     /// Bind group over the pre-stroke snapshot using the canvas-copy BGL:
     /// the composite pipeline binds this as the background at commit time.
     pub fn pre_stroke_bind_group(&self) -> &wgpu::BindGroup {
-        &self.pre_stroke_bind_group
+        &self.pre_stroke.bind_group
+    }
+
+    /// The pre-stroke snapshot as a resource bundle.
+    pub fn pre_stroke(&self) -> &PreStroke {
+        &self.pre_stroke
     }
 
     /// Encode an undo entry for `runs` of `target`, the paint target this
@@ -278,8 +345,11 @@ impl StrokeBuffer {
         let buffer_extent = self.extent();
         let format = target.format();
         // The snapshot covers the buffer's frame: its texel `(x, y)` holds
-        // the canvas pixel `buffer_extent.origin + (x, y)`. The runs must
-        // lie inside it; `snapshot_runs` asserts that.
+        // the canvas pixel `buffer_extent.origin + (x, y)`. The runs are
+        // tile-aligned, so they can reach past a dab-bounded frame; clip
+        // them to what the snapshot holds (`snapshot_runs` asserts the
+        // containment anyway).
+        let runs = runs.clipped(buffer_extent);
         let capture = |pixels: &wgpu::Texture, encoder: &mut wgpu::CommandEncoder| {
             region_scratch.capture_region(
                 encoder,
@@ -290,11 +360,11 @@ impl StrokeBuffer {
                     texture: pixels,
                     canvas_extent: buffer_extent,
                 },
-                runs,
+                runs.clone(),
             )
         };
-        if format == self.pre_stroke_texture.format() {
-            return capture(&self.pre_stroke_texture, encoder);
+        if format == self.pre_stroke.texture.format() {
+            return capture(&self.pre_stroke.texture, encoder);
         }
         debug_assert!(
             target.canvas_extent().contains(buffer_extent),
@@ -302,8 +372,8 @@ impl StrokeBuffer {
         );
         let (narrow, narrow_view) = crate::gpu::create_texture_with_view(
             device,
-            self.width,
-            self.height,
+            buffer_extent.width,
+            buffer_extent.height,
             format,
             "pre-stroke-undo-narrow",
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
@@ -314,8 +384,8 @@ impl StrokeBuffer {
                 device,
                 encoder,
                 pipelines,
-                &self.pre_stroke_view,
-                &self.pre_stroke_texture,
+                &self.pre_stroke.view,
+                &self.pre_stroke.texture,
                 buffer_extent,
             );
         capture(&narrow, encoder)
@@ -342,8 +412,8 @@ impl StrokeBuffer {
             device,
             encoder,
             pipelines,
-            &self.pre_stroke_view,
-            &self.pre_stroke_texture,
+            &self.pre_stroke.view,
+            &self.pre_stroke.texture,
             buffer_extent,
         );
     }
@@ -365,8 +435,8 @@ impl StrokeBuffer {
             device,
             encoder,
             brush_pipelines,
-            &self.pre_stroke_view,
-            &self.pre_stroke_texture,
+            &self.pre_stroke.view,
+            &self.pre_stroke.texture,
             self.extent(),
         );
     }
@@ -423,114 +493,130 @@ impl StrokeBuffer {
         self.merged_base = None;
     }
 
-    /// Current scratch dimensions in pixels (the write side, which is layer-sized).
+    /// Current scratch dimensions in pixels (the write side's frame).
     pub fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
+        let e = self.extent();
+        (e.width, e.height)
     }
 
-    /// Reallocate the writable scratch and pre-stroke snapshot textures to
-    /// `(new_w, new_h)`, copying existing contents into the new textures
-    /// at `(dst_offset_x, dst_offset_y)`. Used during mid-stroke layer
-    /// growth so the scratch keeps its canvas-anchored pre-stroke pixels
-    /// even though the layer's local-coord origin has shifted.
-    ///
-    /// The read mirror inside `scratch` is **not** touched here - its
-    /// size is per-dab footprint-driven, not layer-driven, and a layer
-    /// growth doesn't change what footprint the next dab will request.
-    /// The next `Scratch::sync_read_mirror` call will re-copy in the new
-    /// write-side coordinate frame.
-    ///
-    /// `source_snapshot` and `merged_base` are also left alone: they live
-    /// in frozen frames (the sampled texture's, the canvas window's) that
-    /// destination growth doesn't move.
-    ///
-    /// The pre-stroke snapshot's new area is filled with what the paint
-    /// target (of `target_format`) grows with, [`crate::gpu::default_fill`]:
-    /// the target had nothing there before the stroke, so that default is
-    /// its pre-stroke value, and the commit composites onto it.
-    pub fn grow_preserving(
+    /// Grow the buffer's frame to cover `needed` (canvas coordinates).
+    /// Shared by the engine, which calls it when a dab's footprint or
+    /// read region escapes the current frame. `needed` is clipped to
+    /// `target`'s extent: the buffer never covers pixels the layer
+    /// cannot store.
+    pub fn ensure_covers(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-        new_extent: CanvasRect,
-        canvas_copy: &CanvasCopyLayout,
-        target_format: wgpu::TextureFormat,
+        pipelines: &BrushPipelines,
+        target: &GpuPaintTarget<'_>,
+        needed: CanvasRect,
     ) {
-        let extent = self.extent();
-        let dst_offset_x = (extent.x0() - new_extent.x0()).max(0) as u32;
-        let dst_offset_y = (extent.y0() - new_extent.y0()).max(0) as u32;
-        if new_extent.width == self.width
-            && new_extent.height == self.height
-            && dst_offset_x == 0
-            && dst_offset_y == 0
-        {
-            return;
-        }
-        let target_w = new_extent.width.max(self.width);
-        let target_h = new_extent.height.max(self.height);
-
-        // Grow the writable scratch atomically via Scratch: caller can't
-        // forget either side.  Read mirror stays footprint-sized.
-        self.scratch.grow_write(device, encoder, new_extent);
-
-        let new_pre_stroke_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("pre-stroke-snapshot"),
-            size: wgpu::Extent3d {
-                width: target_w,
-                height: target_h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let new_pre_stroke_view =
-            new_pre_stroke_tex.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Fill the new area with the target's default, then copy the
-        // existing pre-stroke contents in at the canvas-anchored offset.
-        crate::gpu::clear_view(
+        ensure_cover(
+            &mut self.scratch,
+            &mut self.pre_stroke,
+            device,
             encoder,
-            &new_pre_stroke_view,
-            crate::gpu::default_fill(target_format),
-            "pre-stroke-grow-fill",
+            pipelines,
+            target,
+            needed,
         );
-        if self.width > 0 && self.height > 0 {
+    }
+}
+
+/// Grow `scratch`'s write frame to cover `needed` (canvas coordinates,
+/// clipped to `target`'s extent), keeping every frame-sized texture
+/// canvas-anchored: in-flight scratch pixels keep their positions, and
+/// each band the frame gains is captured from `target` into the
+/// pre-stroke snapshot first, where it is still the pre-stroke value
+/// (the stroke only ever writes inside the frame). When `scratch`'s
+/// baseline is the snapshot (`Scratch::set_seeded_baseline`, set by the
+/// lifecycle prologue), the write side's matching bands are seeded from
+/// it; a clear-baseline terminal's bands stay transparent, which is what
+/// its prologue wrote anyway.
+///
+/// An R8 target's frame is always its whole extent rather than the
+/// needed union: the mask's broadcast capture and passthrough commit
+/// have no sub-rect form, so the snapshot is rebuilt and recaptured
+/// whole (the covered area recaptures the same pre-stroke pixels, the
+/// band the mask just grew holds its fill value). Only a mid-stroke
+/// target growth can reach that arm.
+pub(crate) fn ensure_cover(
+    scratch: &mut Scratch,
+    pre_stroke: &mut PreStroke,
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pipelines: &BrushPipelines,
+    target: &GpuPaintTarget<'_>,
+    needed: CanvasRect,
+) {
+    use crate::brush::paint_target_ext::BrushPaintTargetExt;
+    let old = scratch.write_extent();
+    let new = if target.format() == wgpu::TextureFormat::R8Unorm {
+        target.canvas_extent()
+    } else {
+        let Some(new) = old.union(needed).intersect(target.canvas_extent()) else {
+            return;
+        };
+        new
+    };
+    if new == old {
+        return;
+    }
+    debug_assert!(
+        new.contains(old),
+        "a union with the old frame can only enclose it: {new:?} vs {old:?}"
+    );
+    let bands = new.subtract(Some(old));
+
+    // Reframe the snapshot first, then capture each gained band from the
+    // still-intact target, then reframe the write side and seed its
+    // bands from the refreshed snapshot.
+    if target.format() == wgpu::TextureFormat::R8Unorm {
+        *pre_stroke =
+            PreStroke::new(device, pipelines.canvas_copy_layout(), new.width, new.height);
+        target.save_pre_stroke_snapshot(
+            device,
+            encoder,
+            pipelines,
+            &pre_stroke.view,
+            &pre_stroke.texture,
+            new,
+        );
+    } else {
+        pre_stroke.grow(device, encoder, pipelines.canvas_copy_layout(), old, new);
+        for &band in &bands {
             crate::gpu::blit_region(
                 encoder,
-                &self.pre_stroke_texture,
-                (0, 0),
-                &new_pre_stroke_tex,
-                (dst_offset_x, dst_offset_y),
-                self.width,
-                self.height,
+                target.texture(),
+                (
+                    (band.x0() - target.canvas_extent().x0()) as u32,
+                    (band.y0() - target.canvas_extent().y0()) as u32,
+                ),
+                &pre_stroke.texture,
+                (
+                    (band.x0() - new.x0()) as u32,
+                    (band.y0() - new.y0()) as u32,
+                ),
+                band.width,
+                band.height,
             );
         }
-
-        let pre_stroke_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("pre-stroke-sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-        let new_pre_stroke_bg = build_pre_stroke_bind_group(
-            device,
-            canvas_copy,
-            &new_pre_stroke_view,
-            &pre_stroke_sampler,
-        );
-
-        self.pre_stroke_texture = new_pre_stroke_tex;
-        self.pre_stroke_view = new_pre_stroke_view;
-        self.pre_stroke_bind_group = new_pre_stroke_bg;
-        self.width = target_w;
-        self.height = target_h;
+    }
+    scratch.grow_write(device, encoder, new);
+    if scratch.seeded_baseline() {
+        for &band in &bands {
+            scratch.seed_region_from_pre_stroke(
+                encoder,
+                &pre_stroke.texture,
+                LayerRect::from_xywh(
+                    (band.x0() - new.x0()) as u32,
+                    (band.y0() - new.y0()) as u32,
+                    band.width,
+                    band.height,
+                ),
+            );
+        }
     }
 }
 

@@ -7,10 +7,11 @@
 //!
 //! `Scratch` works around this by owning two textures:
 //!
-//! - **Write side** (`write_texture`): dabs render here.  Sized to the layer
-//!   so every layer-local pixel a dab can land on is addressable.  Grows
-//!   when the layer grows (via [`Scratch::grow_write`], driven from
-//!   `painting.rs::ensure_layer_covers_dab`).  Contents preserved on grow
+//! - **Write side** (`write_texture`): dabs render here.  Covers the stroke
+//!   buffer's canvas frame: the layer's whole extent for a terminal that
+//!   reads anywhere, or a dab-bounded rect that grows as the stroke's
+//!   coverage does (via [`Scratch::grow_write`], driven from
+//!   `StrokeBuffer::ensure_covers`).  Contents preserved on grow
 //!   (in-flight stroke pixels mustn't be lost).
 //!
 //! - **Read mirror** (`read_mirror_texture`): a per-dab snapshot of the
@@ -63,7 +64,7 @@ use crate::coord::{CanvasRect, LayerRect};
 const READ_MIRROR_INITIAL_DIM: u32 = 1;
 
 pub struct Scratch {
-    // --- Write side (layer-sized) ---
+    // --- Write side (buffer-framed) ---
     write_texture: wgpu::Texture,
     write_view: wgpu::TextureView,
     /// Bind group over `write_texture` using the canvas-copy BGL:
@@ -75,9 +76,8 @@ pub struct Scratch {
     write_h: u32,
     /// Canvas position of write-side texel `(0, 0)`: the frame's anchor.
     /// The write side, channels and layer-framed appearance mirrors all
-    /// cover `origin .. origin + (write_w, write_h)`; today that equals
-    /// the painted layer's extent and a sub-extent stroke buffer shifts
-    /// it. Scratch-local coordinates are canvas minus `origin`.
+    /// cover `origin .. origin + (write_w, write_h)`. Scratch-local
+    /// coordinates are canvas minus `origin`.
     origin: [i32; 2],
 
     // --- Read mirror (footprint-sized, lazy-grown) ---
@@ -120,6 +120,15 @@ pub struct Scratch {
     /// How the terminal's per-dab pass writes the write side; decides its
     /// storage usage, here and on every grow.
     pass: DabPass,
+
+    /// Whether a growth band (a canvas region the write side gains that
+    /// was never written by the stroke) is seeded from the pre-stroke
+    /// snapshot or left transparent. Set by the framework's lifecycle
+    /// prologue: `SeedScratchFromPreStroke` terminals (blur) need their
+    /// bands seeded so the commit's whole-scratch blit reproduces the
+    /// pre-stroke pixels the band covers; `ClearScratchToTransparent`
+    /// terminals need transparent bands, which is what they write anyway.
+    seeded_baseline: bool,
 
     /// Per-pixel quantities a terminal accumulates alongside the write
     /// side (see [`StrokeChannels`]).  `None` until a terminal asks via
@@ -289,6 +298,7 @@ impl Scratch {
             write_sampler,
             format,
             pass,
+            seeded_baseline: false,
             channels: None,
             appearance: std::collections::HashMap::new(),
         }
@@ -467,6 +477,19 @@ impl Scratch {
         self.format
     }
 
+    /// Declare how a growth band of the write side is initialised:
+    /// `true` seeds it from the pre-stroke snapshot, `false` leaves it
+    /// transparent. Set by the lifecycle prologue; see the field's doc.
+    pub fn set_seeded_baseline(&mut self, seeded: bool) {
+        self.seeded_baseline = seeded;
+    }
+
+    /// Whether growth bands of the write side are seeded from the
+    /// pre-stroke snapshot.
+    pub fn seeded_baseline(&self) -> bool {
+        self.seeded_baseline
+    }
+
     /// Usage the write side was allocated with: attachment, copy and
     /// sampling always, plus storage under a compute dab pass.
     pub fn write_usage(&self) -> wgpu::TextureUsages {
@@ -493,9 +516,9 @@ impl Scratch {
         });
     }
 
-    /// Stroke-prologue helper: copy a full-canvas pre-stroke snapshot
-    /// into the write side so the eventual scratch→layer commit
-    /// reproduces unchanged pixels verbatim. Used by terminals whose
+    /// Stroke-prologue helper: copy the pre-stroke snapshot into the
+    /// write side so the eventual scratch→layer commit reproduces
+    /// unchanged pixels verbatim. Used by terminals whose
     /// commit blits the entire scratch (blur, liquify); see
     /// [`crate::brush::node::Lifecycle::SeedScratchFromPreStroke`].
     ///
@@ -520,8 +543,8 @@ impl Scratch {
     /// Rewind-boundary counterpart of [`Scratch::seed_from_pre_stroke`]:
     /// re-seed only `rect` (write-side local) from the pre-stroke snapshot,
     /// for a partial rewind whose every other pixel already holds the
-    /// state being restored. The snapshot is layer sized like the write
-    /// side, so the same rect addresses both.
+    /// state being restored. The snapshot shares the write side's frame,
+    /// so the same rect addresses both.
     pub fn seed_region_from_pre_stroke(
         &self,
         encoder: &mut wgpu::CommandEncoder,

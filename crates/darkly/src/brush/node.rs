@@ -81,6 +81,29 @@ impl DabPass {
     }
 }
 
+/// How much of the paint target a terminal's stroke buffer must cover.
+/// Declared on the registration beside `scratch_format`: a per-type fact
+/// the engine reads to size the buffer at stroke start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ScratchBounds {
+    /// Every per-stroke texture covers the paint target's whole extent.
+    /// The default, and the safe answer for a terminal whose reads can
+    /// reach anywhere on the layer: a warp field resamples it whole at
+    /// commit, a same-layer clone reads the frozen snapshot at its
+    /// anchor offset, and an R8 mask's broadcast capture has no
+    /// sub-rect form.
+    #[default]
+    Layer,
+    /// The buffer covers only what the stroke's dabs touch: it starts
+    /// small around the stroke's first position and grows, staying
+    /// canvas-anchored, to enclose each dab's write footprint plus the
+    /// read region the terminal reaches for that dab. Valid only for a
+    /// terminal whose dab reads stay inside the region it declares:
+    /// the footprint plus every upstream node's `read_reach`, or a
+    /// wider region the terminal grows the buffer to itself.
+    Dabs,
+}
+
 /// Scratch format for a terminal that accumulates through a compute dab
 /// pass: premultiplied RGBA8 packed into one `u32` per texel with
 /// `pack4x8unorm`, because core WebGPU allows read-write storage only on
@@ -124,6 +147,10 @@ pub struct BrushNodeRegistration {
     /// [`DabPass::write_side_usage`], exactly as a channel's follows from
     /// [`ChannelUse::Storage`](crate::brush::scratch::ChannelUse::Storage).
     pub dab_pass: DabPass,
+    /// How much of the paint target the stroke buffer covers; see
+    /// [`ScratchBounds`]. The engine allocates a small buffer for
+    /// [`ScratchBounds::Dabs`] and grows it under each dab's coverage.
+    pub scratch_bounds: ScratchBounds,
 }
 
 /// Scratch format for terminals that accumulate colour: the default, and
@@ -161,6 +188,7 @@ impl BrushNodeRegistration {
             lifecycle: Lifecycle::None,
             scratch_format: COLOR_SCRATCH_FORMAT,
             dab_pass: DabPass::InstancedDraw,
+            scratch_bounds: ScratchBounds::Layer,
         }
     }
 

@@ -197,17 +197,24 @@ const ACCUMULATE_WGSL: &str = concat!(
 
 /// Per-dab meta, in lockstep with the dab records: the footprint's size
 /// (the dab's dispatch grid) and the read regions (each appearance
-/// snapshot's dispatch grid and origin, in its mirror's texels): one
-/// clamped to the layer, one to the canvas window. A read region is the
-/// footprint grown by the graph's per-dab read reach; for a graph that
-/// reads nothing beyond its footprint each equals the footprint and is
-/// never used, and for a graph without the matching appearance kind the
-/// record is never read.
+/// snapshot's dispatch grid and origin): one clamped to the layer, one
+/// to the canvas window (the merged mirror's frame, in its texels). A
+/// read region is the footprint grown by the graph's per-dab read reach;
+/// for a graph that reads nothing beyond its footprint each equals the
+/// footprint and is never used, and for a graph without the matching
+/// appearance kind the record is never read.
+///
+/// The layer-framed record stays in canvas pixels, not mirror texels:
+/// the stroke buffer's frame can still grow between the evaluate that
+/// queues a dab and the flush that uploads the record, so the flush
+/// translates it into the frame's then-current origin.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct PaintDabMeta {
     grid: [u32; 2],
-    read: SnapshotRecord,
+    /// Canvas-space origin of the dab's layer-framed read region.
+    read_canvas: [i32; 2],
+    read_size: [u32; 2],
     read_merged: SnapshotRecord,
 }
 
@@ -583,6 +590,7 @@ pub fn register() -> BrushNodeRegistration {
         lifecycle: crate::brush::node::Lifecycle::ClearScratchToTransparent,
         scratch_format: PACKED_GROUND_FORMAT,
         dab_pass: DabPass::DispatchPerDab,
+        scratch_bounds: crate::brush::node::ScratchBounds::Dabs,
         node: NodeRegistration {
             type_id: TYPE_ID,
             category: "output",
@@ -756,10 +764,11 @@ impl BrushNodeEvaluator for PaintEvaluator {
             return vec![("dab_size".into(), ScalarValue::Vec2([diameter, diameter]))];
         };
         // The read regions: the footprint grown by what the graph reads
-        // beyond it this dab, in each appearance mirror's texels — one
-        // clamped to the layer, one to the canvas window (the merged
-        // mirror's frame; a dab off-canvas reads an empty merged region,
-        // a zero-size record the snapshot dispatches as a no-op).
+        // beyond it this dab: one clamped to the layer (the stroke
+        // buffer's frame once coverage is grown), one to the canvas
+        // window (the merged mirror's frame; a dab off-canvas reads an
+        // empty merged region, a zero-size record the snapshot
+        // dispatches as a no-op).
         let extent = paint_target.canvas_extent();
         let reach = gpu.dab_batch.read_reach;
         let read_plane = [
@@ -771,6 +780,19 @@ impl BrushNodeEvaluator for PaintEvaluator {
         let read = extent
             .clamp_f32(read_plane[0], read_plane[1], read_plane[2], read_plane[3])
             .expect("the read region encloses a footprint that overlaps the layer");
+        // Grow the buffer's frame so it covers this dab's reads before
+        // they sample the scratch: the upstream graph reaches `reach`
+        // beyond the footprint (smudge, clone at its anchor), and the
+        // snapshot ground and the pre-stroke base are buffer-framed.
+        gpu.stroke
+            .as_mut()
+            .expect("paint::evaluate_gpu observed stroke resources")
+            .ensure_covers(
+                gpu.device,
+                &mut gpu.encoder,
+                gpu.pipelines,
+                read,
+            );
         let canvas = CanvasRect::from_xywh(
             gpu.canvas_origin[0],
             gpu.canvas_origin[1],
@@ -788,13 +810,8 @@ impl BrushNodeEvaluator for PaintEvaluator {
             .meta_bytes
             .extend_from_slice(bytemuck::bytes_of(&PaintDabMeta {
                 grid: [footprint.width, footprint.height],
-                read: SnapshotRecord {
-                    origin: [
-                        (read.x0() - extent.x0()) as u32,
-                        (read.y0() - extent.y0()) as u32,
-                    ],
-                    size: [read.width, read.height],
-                },
+                read_canvas: [read.x0(), read.y0()],
+                read_size: [read.width, read.height],
                 read_merged,
             }));
 
@@ -843,10 +860,13 @@ impl BrushNodeEvaluator for PaintEvaluator {
             .as_ref()
             .expect("paint::flush_dabs requires stroke resources");
         let scratch = &*stroke.scratch;
-        let paint_target = &stroke.paint_target;
-        let canvas_ext = paint_target.canvas_extent();
-        let layer_offset = [canvas_ext.x0(), canvas_ext.y0()];
-        let layer_size = [canvas_ext.width, canvas_ext.height];
+        // The dab pass dispatches on the write side, so `layer_offset` /
+        // `layer_size` name the buffer's frame, not the paint target's:
+        // `layer_px` in the intrinsic header is canvas minus this origin
+        // and every storage texel the body addresses is inside it.
+        let buffer_ext = scratch.write_extent();
+        let layer_offset = [buffer_ext.x0(), buffer_ext.y0()];
+        let layer_size = [buffer_ext.width, buffer_ext.height];
 
         // Build the uniform buffer: intrinsic header + node fields.
         // Per-stroke not per-dab, but still no need to clone.
@@ -887,24 +907,35 @@ impl BrushNodeEvaluator for PaintEvaluator {
                         .channel_view(name)
                         .expect("a brush declares the channel its law accumulates into")
                 });
-                // The grounds are layer-framed; `kind`'s frame picks the
-                // base they are laid onto, how they map into its mirror,
-                // and which read records the flush uploads.
+                // The grounds are buffer-framed; `kind`'s frame picks
+                // the base they are laid onto, how they map into its
+                // mirror, and which read records the flush uploads. The
+                // layer-framed record arrives in canvas pixels and is
+                // translated into the frame here.
                 let (base_tex, ground_origin, records) = match kind.mirror_frame() {
                     Some(AppearanceFrame::Canvas) => (
                         stroke.merged_base_texture.expect(
                             "begin_stroke captures the merged base for a brush that reads it",
                         ),
                         [
-                            canvas_ext.x0() - gpu.canvas_origin[0],
-                            canvas_ext.y0() - gpu.canvas_origin[1],
+                            buffer_ext.x0() - gpu.canvas_origin[0],
+                            buffer_ext.y0() - gpu.canvas_origin[1],
                         ],
                         metas.iter().map(|m| m.read_merged).collect::<Vec<_>>(),
                     ),
                     _ => (
-                        stroke.pre_stroke_texture,
+                        stroke.pre_stroke.texture(),
                         [0, 0],
-                        metas.iter().map(|m| m.read).collect(),
+                        metas
+                            .iter()
+                            .map(|m| SnapshotRecord {
+                                origin: [
+                                    (m.read_canvas[0] - buffer_ext.x0()) as u32,
+                                    (m.read_canvas[1] - buffer_ext.y0()) as u32,
+                                ],
+                                size: m.read_size,
+                            })
+                            .collect(),
                     ),
                 };
                 let base = base_tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1068,7 +1099,7 @@ impl BrushNodeEvaluator for PaintEvaluator {
                 build,
                 law: law.commit_law(),
             },
-            stroke.pre_stroke_bind_group,
+            stroke.pre_stroke.bind_group(),
             stroke.scratch.write_extent(),
             opacity,
             gpu.blend_mode,

@@ -217,6 +217,20 @@ impl RegionRuns {
         &self.0
     }
 
+    /// Every run clipped to `clip`, empty intersections dropped. A capture
+    /// source smaller than the layer the runs were packed on (a dab-bounded
+    /// stroke buffer) clips the tile-aligned runs to what it saved; the
+    /// dropped pixels were never written, so the restore needs no record
+    /// of them either.
+    pub fn clipped(&self, clip: CanvasRect) -> Self {
+        RegionRuns(
+            self.0
+                .iter()
+                .filter_map(|r| r.intersect(clip))
+                .collect(),
+        )
+    }
+
     /// Bytes the packed buffer holds: each run's padded rows.
     pub fn byte_size(&self, bpp: u32) -> u64 {
         byte_size_of(&self.0, bpp)

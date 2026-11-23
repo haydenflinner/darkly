@@ -174,13 +174,13 @@ pub struct StrokeResources<'a> {
     /// `commit_scratch_blit`), terminals call uniform methods on the
     /// paint target and never branch on R8 vs RGBA8.
     pub paint_target: GpuPaintTarget<'a>,
-    /// Pre-stroke layer snapshot. Supplied by `StrokeBuffer::save_pre_stroke`
-    /// at the start of a stroke.
-    pub pre_stroke_texture: &'a wgpu::Texture,
-    /// Bind group (canvas-copy BGL) over `pre_stroke_texture`, pre-built
-    /// by `StrokeBuffer` so `color_output::commit` can bind it as the
-    /// composite background without recreating bind groups every event.
-    pub pre_stroke_bind_group: &'a wgpu::BindGroup,
+    /// Pre-stroke snapshot of the paint target, over the scratch's
+    /// frame. Supplied by `StrokeBuffer::save_pre_stroke` at the start
+    /// of a stroke and kept in step with `scratch`'s frame by
+    /// [`Self::ensure_covers`]: the snapshot's canvas extent always
+    /// equals `scratch.write_extent()`. Held mutably so a coverage
+    /// growth can reallocate it.
+    pub pre_stroke: &'a mut super::stroke_buffer::PreStroke,
     /// Override for the brush program's sampled source slot (`@group(3)`):
     /// a texture frozen at stroke start when the graph samples something
     /// other than the painted layer (`StrokeBuffer::save_source_snapshot`,
@@ -460,8 +460,8 @@ impl<'a> StrokeResources<'a> {
     /// The texture to bind to the brush's sampled source slot: the
     /// stroke's frozen [`Self::source_override`] when one was captured,
     /// else the pre-stroke snapshot of the painted layer.
-    pub fn source_texture(&self) -> &'a wgpu::Texture {
-        self.source_override.unwrap_or(self.pre_stroke_texture)
+    pub fn source_texture(&self) -> &wgpu::Texture {
+        self.source_override.unwrap_or(self.pre_stroke.texture())
     }
 
     /// A view over [`Self::source_texture`], for consumers that bind the
@@ -473,12 +473,36 @@ impl<'a> StrokeResources<'a> {
     }
 
     /// The scratch's write side as a canvas frame: what the checkpoint
-    /// ring saves and restores, anchored at the paint target's extent.
+    /// ring saves and restores, anchored at the buffer's extent.
     pub fn scratch_frame(&self) -> crate::gpu::atlas::CanvasFrame<'_> {
         crate::gpu::atlas::CanvasFrame {
             texture: self.scratch.write_texture(),
-            canvas_extent: self.paint_target.canvas_extent(),
+            canvas_extent: self.scratch.write_extent(),
         }
+    }
+
+    /// Grow the buffer's frame to cover `needed` (canvas coordinates,
+    /// clipped to the paint target). A terminal calls this when a dab's
+    /// footprint or declared read region escapes the current frame; the
+    /// shared routine keeps the scratch, its channels and the pre-stroke
+    /// snapshot canvas-anchored and captures the gained bands from the
+    /// still-intact target.
+    pub fn ensure_covers(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        pipelines: &super::pipeline::BrushPipelines,
+        needed: crate::coord::CanvasRect,
+    ) {
+        super::stroke_buffer::ensure_cover(
+            self.scratch,
+            self.pre_stroke,
+            device,
+            encoder,
+            pipelines,
+            &self.paint_target,
+            needed,
+        );
     }
 
     /// The scratch's channel textures in declaration order, as the
@@ -527,7 +551,7 @@ impl<'a> StrokeGpuSetup<'a> {
     where
         'a: 'b,
     {
-        let (scratch, pre_stroke_texture, pre_stroke_bind_group, source_override, merged_base) =
+        let (scratch, pre_stroke, source_override, merged_base) =
             buffer.parts_for_brush_ctx();
         BrushGpuContext {
             encoder: self
@@ -547,8 +571,7 @@ impl<'a> StrokeGpuSetup<'a> {
             stroke: Some(StrokeResources {
                 scratch,
                 paint_target: self.paint_target,
-                pre_stroke_texture,
-                pre_stroke_bind_group,
+                pre_stroke,
                 source_override,
                 merged_base_texture: merged_base,
             }),
@@ -791,6 +814,7 @@ impl<'a> BrushGpuContext<'a> {
         );
         let stroke = self.stroke.as_mut()?;
         let pt_canvas = stroke.paint_target.canvas_extent();
+        let buffer_canvas = stroke.scratch.write_extent();
 
         let layer_x0 = pt_canvas.x0() as f32;
         let layer_y0 = pt_canvas.y0() as f32;
@@ -811,11 +835,13 @@ impl<'a> BrushGpuContext<'a> {
         }
 
         // Read region (the scratch snapshot the brush samples from). Floor the
-        // near edge and ceil the far edge before clamping to the extent, so
-        // every fragment in the quad has a valid scratch read mirror texel and
-        // `i32` origins stay representable (paste-extent / leftward-grown
-        // layers).
-        let copy = pt_canvas.clamp_f32(
+        // near edge and ceil the far edge before clamping to the buffer's
+        // frame, so every fragment in the quad has a valid scratch read
+        // mirror texel and `i32` origins stay representable
+        // (paste-extent / leftward-grown layers). The caller has grown
+        // the buffer to cover this region; the clamp keeps the copy
+        // inside the write side it reads.
+        let copy = buffer_canvas.clamp_f32(
             position[0] - read_half_w,
             position[1] - read_half_h,
             position[0] + read_half_w,
@@ -840,14 +866,13 @@ impl<'a> BrushGpuContext<'a> {
             .expect("write region has positive area (quad_w/h > 0), so its snapped bbox overlaps the extent");
         self.dab_batch.push_write_bbox(write_bbox);
 
-        // The read mirror is filled from the stroke scratch, which is
-        // layer-sized and indexed in layer-local pixels; translate
-        // before issuing the copy.
+        // The read mirror is filled from the stroke scratch, indexed in
+        // its own local pixels; translate before issuing the copy.
         // Re-borrow stroke for the scratch copy (push_write_bbox above
         // took `&mut self.dab_batch`, which is disjoint from `self.stroke`).
         let stroke = self.stroke.as_mut().expect("stroke just observed Some");
-        let copy_local_x = (copy_canvas_x - pt_canvas.x0()) as u32;
-        let copy_local_y = (copy_canvas_y - pt_canvas.y0()) as u32;
+        let copy_local_x = (copy_canvas_x - buffer_canvas.x0()) as u32;
+        let copy_local_y = (copy_canvas_y - buffer_canvas.y0()) as u32;
         stroke.scratch.sync_read_mirror(
             self.device,
             &mut self.encoder,
@@ -858,8 +883,8 @@ impl<'a> BrushGpuContext<'a> {
         );
 
         Some(DabFootprint {
-            layer_offset: [pt_canvas.x0(), pt_canvas.y0()],
-            layer_size: [pt_canvas.width, pt_canvas.height],
+            layer_offset: [buffer_canvas.x0(), buffer_canvas.y0()],
+            layer_size: [buffer_canvas.width, buffer_canvas.height],
             unclipped_origin: [unclipped_write_x0, unclipped_write_y0],
             origin: [write_x0, write_y0],
             size: [quad_w, quad_h],
@@ -904,10 +929,10 @@ impl<'a> BrushGpuContext<'a> {
 /// Per-dab footprint produced by [`BrushGpuContext::prepare_dab_canvas_copy`].
 ///
 /// Bundles every value brush terminals need to populate per-dab uniforms:
-/// the layer-clipped quad in canvas coords, the layer-local origin of
-/// the `scratch read mirror` snapshot the shader will read, and the layer's own
-/// offset/size (for vertex NDC mapping against the layer-sized scratch
-/// render target).
+/// the layer-clipped quad in canvas coords, the scratch-local origin of
+/// the `scratch read mirror` snapshot the shader will read, and the
+/// buffer frame's offset/size (for vertex NDC mapping against the
+/// scratch render target and for `layer_px` in the intrinsic header).
 ///
 /// Coordinates are reported as `[x, y]` arrays so callers can name them
 /// however reads best at the call site. `unclipped_origin` is the dab's
@@ -916,9 +941,11 @@ impl<'a> BrushGpuContext<'a> {
 /// derive `uv_min/uv_max` relative to the original (pre-clip) footprint.
 #[derive(Copy, Clone, Debug)]
 pub struct DabFootprint {
-    /// `paint_target.offset_x/y`: layer's canvas-space offset.
+    /// The scratch frame's canvas-space offset. Dab passes dispatch on
+    /// the write side, whose addressable frame is the buffer's extent;
+    /// `layer_px` in the intrinsic header is canvas minus this origin.
     pub layer_offset: [i32; 2],
-    /// `paint_target.width/height`: layer pixel dimensions.
+    /// The scratch frame's pixel dimensions.
     pub layer_size: [u32; 2],
     /// Dab footprint top-left in canvas pixels, *before* clipping to
     /// the layer extent.
@@ -930,9 +957,9 @@ pub struct DabFootprint {
     /// Integer canvas-space copy rect origin (`i32`, may be negative
     /// on paste-extent layers).
     pub copy_canvas_origin: [i32; 2],
-    /// Layer-local origin of the `scratch read mirror` snapshot region (matches
-    /// the `ensure_canvas_copy` source origin already issued). Use as
-    /// the `copy_origin` uniform for shaders that read `scratch read mirror`.
+    /// Scratch-local origin of the `scratch read mirror` snapshot region
+    /// (matches the `sync_read_mirror` source origin already issued).
+    /// Use as the `copy_origin` uniform for shaders that read the mirror.
     pub copy_local_origin: [u32; 2],
     /// `scratch read mirror` snapshot dimensions in pixels.
     pub copy_size: [u32; 2],

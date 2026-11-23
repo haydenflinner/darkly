@@ -368,6 +368,12 @@ impl StrokeEngine {
         self.runner.dab_pass()
     }
 
+    /// How much of the paint target the stroke buffer covers: see
+    /// [`BrushGraphRunner::scratch_bounds`](crate::brush::eval::BrushGraphRunner::scratch_bounds).
+    pub fn scratch_bounds(&self) -> crate::brush::node::ScratchBounds {
+        self.runner.scratch_bounds()
+    }
+
     /// Whether the stroke's brush samples a frozen source (clone): see
     /// [`BrushGraphRunner::samples_source`](crate::brush::eval::BrushGraphRunner::samples_source).
     pub fn samples_source(&self) -> bool {

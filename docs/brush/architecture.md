@@ -414,7 +414,7 @@ orders nothing within one. Such a graph requests
 each dab's (`brush/appearance_snapshot.rs`): the ground (and the build
 channel) laid on the pre-stroke snapshot through `lib/commit_law.wgsl`, the
 law the commit uses, at full strength in paint mode, written into a
-layer-sized `rgba8unorm` mirror on `Scratch` under the dab's read region.
+scratch-framed `rgba8unorm` mirror on `Scratch` under the dab's read region.
 The read region is the footprint grown by the graph's per-dab
 `read_reach` (the sampler's `|motion|` plus a texel). The dab then samples
 the mirror as an ordinary graph texture. Opacity and erase stay at the

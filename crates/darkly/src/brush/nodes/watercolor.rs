@@ -740,6 +740,7 @@ pub fn register() -> BrushNodeRegistration {
         lifecycle: crate::brush::node::Lifecycle::ClearScratchToTransparent,
         scratch_format: crate::brush::node::COLOR_SCRATCH_FORMAT,
         dab_pass: crate::brush::node::DabPass::InstancedDraw,
+        scratch_bounds: crate::brush::node::ScratchBounds::Dabs,
         node: NodeRegistration {
             type_id: TYPE_ID,
             category: "output",
@@ -873,12 +874,37 @@ impl BrushNodeEvaluator for WatercolorEvaluator {
         let bbox_radius = radius * compiled.brush_extent_factor + compiled.brush_extent_extra_px;
         // Publish the footprint; `None` means the dab is entirely off-extent
         // and has no pixels to draw.
+        let extent = paint_target.canvas_extent();
         if gpu
             .dab_batch
             .record_dab_footprint(paint_target, position, bbox_radius)
             .is_none()
         {
             return vec![("dab_size".into(), ScalarValue::Vec2([diameter, diameter]))];
+        }
+
+        // Grow the buffer's frame over everything this dab reads: the
+        // pickup pass samples `t_pre_stroke` and `t_scratch` out to
+        // `pickup_size * radius`, and the upstream graph reaches its
+        // `read_reach` beyond the footprint.
+        let pickup_size = ctx.input_f32("pickup_size").clamp(0.0, 2.0);
+        let reach = gpu.dab_batch.read_reach;
+        let cover = (pickup_size * radius).max(bbox_radius + reach[0].max(reach[1]));
+        if let Some(needed) = extent.clamp_f32(
+            position[0] - cover,
+            position[1] - cover,
+            position[0] + cover,
+            position[1] + cover,
+        ) {
+            gpu.stroke
+                .as_mut()
+                .expect("watercolor::evaluate_gpu observed stroke resources")
+                .ensure_covers(
+                    gpu.device,
+                    &mut gpu.encoder,
+                    gpu.pipelines,
+                    needed,
+                );
         }
 
         gpu.dab_batch
@@ -907,10 +933,10 @@ impl BrushNodeEvaluator for WatercolorEvaluator {
         let Some(stroke) = gpu.stroke.as_ref() else {
             return;
         };
-        let pre_stroke_bg = stroke.pre_stroke_bind_group;
+        let pre_stroke_bg = stroke.pre_stroke.bind_group();
         let pre_stroke_size = [
-            stroke.pre_stroke_texture.width(),
-            stroke.pre_stroke_texture.height(),
+            stroke.pre_stroke.texture().width(),
+            stroke.pre_stroke.texture().height(),
         ];
 
         let pipeline_ref = gpu.pipelines.get::<WatercolorPipeline>("watercolor");
@@ -922,11 +948,14 @@ impl BrushNodeEvaluator for WatercolorEvaluator {
             .as_ref()
             .expect("watercolor::flush_dabs requires stroke resources");
         let scratch = &*stroke.scratch;
-        let paint_target = &stroke.paint_target;
-        let canvas_ext = paint_target.canvas_extent();
-        let pre_stroke_origin = [canvas_ext.x0(), canvas_ext.y0()];
-        let layer_offset = [canvas_ext.x0(), canvas_ext.y0()];
-        let layer_size = [canvas_ext.width, canvas_ext.height];
+        // The dab pass and the pickup pass both address the scratch,
+        // which the pre-stroke snapshot frames: `layer_offset` /
+        // `layer_size` and `pre_stroke_origin` all name the buffer's
+        // frame, not the paint target's.
+        let buffer_ext = scratch.write_extent();
+        let pre_stroke_origin = [buffer_ext.x0(), buffer_ext.y0()];
+        let layer_offset = [buffer_ext.x0(), buffer_ext.y0()];
+        let layer_size = [buffer_ext.width, buffer_ext.height];
 
         // Build composite uniforms (intrinsic + node-contributed).
         let mut composite_uniform_bytes: Vec<u8> = Vec::with_capacity(MAX_UNIFORM_BYTES);
@@ -949,11 +978,11 @@ impl BrushNodeEvaluator for WatercolorEvaluator {
         // dab record; not in scope.
         // The pickup shader maps both `t_pre_stroke` and `t_scratch` with one
         // set of origin/size uniforms, which is only valid because the two
-        // share the layer frame. `StrokeBuffer` grows them together.
+        // share the buffer's frame. `StrokeBuffer` grows them together.
         debug_assert_eq!(
             scratch.write_dimensions(),
             (pre_stroke_size[0], pre_stroke_size[1]),
-            "scratch and pre_stroke must share the layer frame: the pickup \
+            "scratch and pre_stroke must share the buffer's frame: the pickup \
              shader derives both UVs from `pre_stroke_origin`/`pre_stroke_size`",
         );
 
@@ -1111,7 +1140,7 @@ impl BrushNodeEvaluator for WatercolorEvaluator {
                 build: Some(stroke.scratch.write_bind_group()),
                 law: CommitLaw::Deposit,
             },
-            stroke.pre_stroke_bind_group,
+            stroke.pre_stroke.bind_group(),
             stroke.scratch.write_extent(),
             opacity,
             gpu.blend_mode,

@@ -34,6 +34,7 @@ use crate::brush::pipeline::BrushPipelines;
 use crate::brush::spacing::SpacingConfig;
 use crate::brush::stroke_buffer::StrokeBuffer;
 use crate::brush::stroke_engine::StrokeEngine;
+use crate::coord::CanvasRect;
 use crate::document::{canvas_per_reference_px, Document};
 use crate::gpu::compositor::Compositor;
 use crate::gpu::context::GpuContext;
@@ -79,7 +80,7 @@ pub(crate) struct LastStroke {
     conditions: StrokeConditions,
     /// Scratch plus the pre-stroke snapshot: what a redraw composites onto
     /// and what the undo entry is committed from.
-    buffer: StrokeBuffer,
+    pub(crate) buffer: StrokeBuffer,
     /// The undo-storage tiles the latest rendering's dabs wrote, clipped to
     /// their footprints' union: the undo entry's region. `None` when no dab
     /// wrote.
@@ -344,25 +345,49 @@ impl DarklyEngine {
         engine
     }
 
-    /// A stroke buffer for `engine` over `layer_id`'s paint target: sized to
-    /// the target, its pre-stroke snapshot holding the target's pixels now,
-    /// and, for a brush that samples a source, that source frozen. `None`
-    /// when the target has no texture.
+    /// A stroke buffer for `engine` over `layer_id`'s paint target: its
+    /// pre-stroke snapshot holding the target's pixels under the buffer's
+    /// frame now, and, for a brush that samples a source, that source
+    /// frozen. `None` when the target has no texture.
+    ///
+    /// `first_pos` is the stroke's first position in canvas pixels. A
+    /// `ScratchBounds::Dabs` terminal's buffer opens as the texel
+    /// containing it and grows under each dab's coverage; every other
+    /// terminal keeps the target's whole extent, and an R8 target's
+    /// buffer stays full-extent because the broadcast capture has no
+    /// sub-rect form.
     pub(crate) fn open_stroke_buffer(
         &mut self,
         layer_id: LayerId,
         engine: &StrokeEngine,
+        first_pos: [f32; 2],
     ) -> Option<StrokeBuffer> {
-        // Sized to the layer's bounds: for paste-extent layers larger than
-        // the canvas, dabs landing on off-canvas pixels are saved and
+        // A layer-sized buffer covers paste-extent layers larger than the
+        // canvas too, so dabs landing on off-canvas pixels are saved and
         // restored correctly on undo.
         let layer_tex = self.compositor.node_texture(layer_id)?;
         let layer_extent = layer_tex.canvas_extent();
+        let bounded = engine.scratch_bounds() == crate::brush::node::ScratchBounds::Dabs
+            && layer_tex.format() == wgpu::TextureFormat::Rgba8Unorm;
+        let extent = if bounded {
+            layer_extent
+                .clamp_f32(
+                    first_pos[0] - 0.5,
+                    first_pos[1] - 0.5,
+                    first_pos[0] + 0.5,
+                    first_pos[1] + 0.5,
+                )
+                .unwrap_or_else(|| {
+                    CanvasRect::from_xywh(layer_extent.x0(), layer_extent.y0(), 1, 1)
+                })
+        } else {
+            layer_extent
+        };
         // The terminal decides what its scratch holds: colour for most
         // brushes, a displacement field for liquify.
         let mut buffer = StrokeBuffer::new(
             &self.gpu.device,
-            layer_extent,
+            extent,
             &self.brush_pipelines,
             engine.scratch_format(),
             engine.dab_pass(),
@@ -458,6 +483,23 @@ impl DarklyEngine {
                     &source,
                 );
             });
+        } else if samples_source {
+            // No pinned or merged source: the clone samples the painted
+            // layer itself through the pre-stroke snapshot, at an anchor
+            // offset that can reach anywhere on the layer. The buffer
+            // must cover it whole before the first dab samples.
+            if let Some(layer_tex) = self.compositor.node_texture(layer_id) {
+                let target = GpuPaintTarget::from_node(layer_tex, canvas_rect);
+                self.gpu.encode("stroke-buffer-cover-source", |encoder| {
+                    buffer.ensure_covers(
+                        &self.gpu.device,
+                        encoder,
+                        &self.brush_pipelines,
+                        &target,
+                        target.canvas_extent(),
+                    );
+                });
+            }
         }
         if samples_merged_live {
             self.gpu.encode("merged-base-snapshot", |encoder| {
@@ -570,6 +612,36 @@ impl DarklyEngine {
             engine.dab_pass(),
         );
 
+        // A terminal change can reopen the buffer under different
+        // bounds: a dab-bounded frame is too small for a terminal that
+        // reads the whole layer. Re-cover it to the target's extent,
+        // restoring the target's pre-stroke pixels first so the grown
+        // bands capture them and not the rendering being replaced.
+        if engine.scratch_bounds() == crate::brush::node::ScratchBounds::Layer {
+            let layer_extent = self
+                .compositor
+                .node_texture(stroke.layer_id)
+                .map(|tex| tex.canvas_extent());
+            if let Some(layer_extent) = layer_extent {
+                if stroke.buffer.extent() != layer_extent {
+                    self.restore_pre_stroke(&stroke, None);
+                    let paint_target = GpuPaintTarget::from_node(
+                        self.compositor.node_texture(stroke.layer_id).unwrap(),
+                        self.doc.canvas_rect(),
+                    );
+                    self.gpu.encode("stroke-buffer-cover-layer", |encoder| {
+                        stroke.buffer.ensure_covers(
+                            &self.gpu.device,
+                            encoder,
+                            &self.brush_pipelines,
+                            &paint_target,
+                            layer_extent,
+                        );
+                    });
+                }
+            }
+        }
+
         let mut perf = crate::brush::gpu_context::BrushPerfCounters::default();
         if engine.samples_source() || engine.samples_merged_live() {
             // A merged source reads the composite, which must not hold the
@@ -581,12 +653,13 @@ impl DarklyEngine {
         self.capture_source_snapshot(stroke.layer_id, &mut stroke.buffer, &engine);
 
         if let Some(setup) = self.redraw_gpu_setup(&stroke) {
-            // The frozen source's frame when one exists, else the target's.
+            // The frozen source's frame when one exists, else the
+            // pre-stroke snapshot's, which is the buffer's extent.
             engine.set_clone_source_frame(
                 stroke
                     .buffer
                     .source_snapshot_frame()
-                    .unwrap_or_else(|| setup.paint_target.canvas_extent()),
+                    .unwrap_or_else(|| stroke.buffer.extent()),
             );
             self.brush_pipelines.reset_uniform_rings();
             let mut ctx = setup.ctx(&mut stroke.buffer, "stroke-edit-redraw");

@@ -40,6 +40,7 @@ pub const TYPE_ID: &str = "pattern";
 pub fn register() -> BrushNodeRegistration {
     BrushNodeRegistration {
         dab_pass: crate::brush::node::DabPass::InstancedDraw,
+        scratch_bounds: crate::brush::node::ScratchBounds::Layer,
         pipelines: vec![],
         evaluator: || Box::new(PatternEvaluator),
         lifecycle: crate::brush::node::Lifecycle::None,

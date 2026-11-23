@@ -1049,6 +1049,14 @@ impl DarklyEngine {
         self.brush_stroke.as_ref()?.engine.save_points.full_bbox()
     }
 
+    /// Canvas-space frame of the last stroke's buffer: the paint target's
+    /// extent for a layer-bounded terminal, or the dab union a bounded
+    /// terminal grew to. `None` until a stroke settles. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_last_stroke_buffer_extent(&self) -> Option<crate::coord::CanvasRect> {
+        self.last_stroke.as_ref().map(|s| s.buffer.extent())
+    }
+
     /// Whether the frame loop would schedule another frame right now: the
     /// `needs_more` value `render` returns to JS. Test-only.
     #[cfg(any(test, feature = "testing"))]

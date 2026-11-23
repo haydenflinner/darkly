@@ -137,6 +137,7 @@ pub fn register() -> BrushNodeRegistration {
         lifecycle: crate::brush::node::Lifecycle::ClearScratchToTransparent,
         scratch_format: crate::brush::warp_field::FIELD_FORMAT,
         dab_pass: crate::brush::node::DabPass::InstancedDraw,
+        scratch_bounds: crate::brush::node::ScratchBounds::Layer,
         node: NodeRegistration {
             type_id: TYPE_ID,
             category: "output",
