@@ -346,6 +346,8 @@ canvasOriginX: number, canvasOriginY: number, canvasWidth: number, canvasHeight:
 
 export type EnsureLayerExtentReq = { id: number, origin_x: number, origin_y: number, w: number, h: number, };
 
+export type EnsureStrokeCoverReq = { origin_x: number, origin_y: number, w: number, h: number, };
+
 export type ExposedPortInfo = { 
 /**
  * `"<node_id>.<port_name>"`: the same string used to address the
@@ -1315,6 +1317,7 @@ export type RequestKind =
     | 'duplicate_nodes'
     | 'end_stroke'
     | 'ensure_layer_extent'
+    | 'ensure_stroke_cover'
     | 'feather_selection'
     | 'fill_background'
     | 'fill_background_color'
@@ -1549,6 +1552,7 @@ export const REQUEST_KINDS: readonly RequestKind[] = [
     'duplicate_nodes',
     'end_stroke',
     'ensure_layer_extent',
+    'ensure_stroke_cover',
     'feather_selection',
     'fill_background',
     'fill_background_color',
@@ -1791,6 +1795,7 @@ export interface EngineApi {
     duplicateNodes(req: DuplicateNodesReq): Promise<Array<number>>;
     endStroke(): void;
     ensureLayerExtent(req: EnsureLayerExtentReq): void;
+    ensureStrokeCover(req: EnsureStrokeCoverReq): void;
     featherSelection(req: FeatherSelectionReq): void;
     fillBackground(req: FillBackgroundReq): void;
     fillBackgroundColor(req: FillBackgroundColorReq): void;
@@ -2027,6 +2032,7 @@ export function makeApi(t: Transport): EngineApi {
         duplicateNodes: (req) => t.request('duplicate_nodes', req),
         endStroke: () => t.postFF('end_stroke'),
         ensureLayerExtent: (req) => t.postFF('ensure_layer_extent', req),
+        ensureStrokeCover: (req) => t.postFF('ensure_stroke_cover', req),
         featherSelection: (req) => t.postFF('feather_selection', req),
         fillBackground: (req) => t.postFF('fill_background', req),
         fillBackgroundColor: (req) => t.postFF('fill_background_color', req),

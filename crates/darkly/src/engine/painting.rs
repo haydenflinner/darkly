@@ -771,6 +771,37 @@ impl DarklyEngine {
         }
     }
 
+    /// Cover the in-flight stroke's buffer once, for a caller that knows
+    /// the stroke's coverage up front: replay posts the dab-union rect
+    /// right after `begin_stroke`, so the buffer allocates at full
+    /// coverage instead of regrowing per dab and leaving dead texture
+    /// generations behind wgpu's deferred free (gpu-commons-oom). A no-op
+    /// without an in-flight stroke; live drawing never sends it (a pen
+    /// cannot know its extent — the per-dab grow path stays for that).
+    #[handler]
+    pub fn ensure_stroke_cover(&mut self, origin_x: i32, origin_y: i32, w: u32, h: u32) {
+        let needed = crate::coord::CanvasRect::from_xywh(origin_x, origin_y, w, h);
+        let Some(layer_id) = self.active_stroke_layer else {
+            return;
+        };
+        let Some(layer_tex) = self.compositor.node_texture(layer_id) else {
+            return;
+        };
+        let Some(stroke) = self.brush_stroke.as_mut() else {
+            return;
+        };
+        let target = GpuPaintTarget::from_node(layer_tex, self.doc.canvas_rect());
+        self.gpu.encode("stroke-buffer-cover-hint", |encoder| {
+            stroke.buffer.ensure_covers(
+                &self.gpu.device,
+                encoder,
+                &self.brush_pipelines,
+                &target,
+                needed,
+            );
+        });
+    }
+
     /// Grow a filter's own pixel buffer (doc `PixelBuffer.bounds` + GPU
     /// texture) to cover `needed`, honoring `MAX_LAYER_DIM`. Document-led, the
     /// filter analogue of [`Self::grow_layer`]: the filter grows itself,
