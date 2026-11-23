@@ -405,6 +405,20 @@ impl DarklyEngine {
                 &paint_target,
             );
         });
+        // A replay's coverage hint arrived while `brush_stroke` was still
+        // `None` (`ensure_stroke_cover` stashes it): cover the buffer now,
+        // at dab-union extent, instead of regrowing per dab.
+        if let Some(needed) = self.pending_stroke_cover.take() {
+            self.gpu.encode("stroke-buffer-cover-hint", |encoder| {
+                buffer.ensure_covers(
+                    &self.gpu.device,
+                    encoder,
+                    &self.brush_pipelines,
+                    &paint_target,
+                    needed,
+                );
+            });
+        }
         self.capture_source_snapshot(layer_id, &mut buffer, engine);
         Some(buffer)
     }

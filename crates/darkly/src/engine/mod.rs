@@ -492,6 +492,11 @@ pub struct DarklyEngine {
     /// undo diff would have needed.
     pub(crate) stroke_suppressed: bool,
     pub(crate) active_stroke_layer: Option<LayerId>,
+    /// A coverage hint posted between `begin_stroke` and the first dab,
+    /// while `brush_stroke` is still `None` (GPU setup lazy-inits on the
+    /// first `stroke_to`). `open_stroke_buffer` applies it to the fresh
+    /// buffer. Only a replay can know a stroke's extent up front.
+    pub(crate) pending_stroke_cover: Option<crate::coord::CanvasRect>,
     /// The shape a drag is placing: a document layer with no undo record
     /// until the drag commits it. A pending edit, resolved by
     /// [`Self::resolve_pending_edits`].
@@ -903,6 +908,7 @@ impl DarklyEngine {
             history_suppressed: false,
             stroke_suppressed: false,
             active_stroke_layer: None,
+            pending_stroke_cover: None,
             shape_placement: None,
             isolated_node: None,
             view_transform: ViewTransform::identity(),

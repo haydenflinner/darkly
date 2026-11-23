@@ -1235,6 +1235,68 @@ fn dab_bounded_buffer_covers_only_stroke_coverage() {
     assert!(hit, "the dab's paint should land at (100, 100)");
 }
 
+/// Replay's coverage hint lands between `begin_stroke` and the first dab,
+/// while the stroke's GPU state is still `None` (lazy init on the first
+/// `stroke_to`). The hint is stashed and `open_stroke_buffer` applies it
+/// the moment the buffer exists, so a hinted stroke allocates once at
+/// coverage instead of regrowing per dab.
+#[test]
+fn stroke_cover_hint_before_first_dab_presizes_buffer() {
+    use darkly::coord::CanvasRect;
+
+    let (cw, ch) = (2048u32, 2048u32);
+    let mut engine = test_engine(cw, ch);
+    let layer_id = engine.add_raster_layer(None);
+
+    engine.set_foreground_color([1.0, 0.0, 0.0, 1.0]);
+    engine.begin_stroke(layer_id).unwrap();
+    engine.ensure_stroke_cover(100, 100, 700, 500);
+    engine.stroke_to(StrokeOp::BrushStroke {
+        x: 150.0,
+        y: 150.0,
+        pressure: 1.0,
+        x_tilt: 0.0,
+        y_tilt: 0.0,
+        rotation: 0.0,
+        tangential_pressure: 0.0,
+        time_ms: 0.0,
+    });
+    engine.end_stroke();
+
+    let extent = engine
+        .test_last_stroke_buffer_extent()
+        .expect("stroke kept its buffer");
+    assert!(
+        extent.contains(CanvasRect::from_xywh(100, 100, 700, 500)),
+        "the buffer {extent:?} must open already covering the hinted rect"
+    );
+}
+
+/// A hint posted with no stroke in flight is dropped, not stashed into
+/// the next stroke.
+#[test]
+fn stroke_cover_hint_without_stroke_is_dropped() {
+    use darkly::coord::CanvasRect;
+
+    let mut engine = test_engine(2048, 2048);
+    let layer_id = engine.add_raster_layer(None);
+
+    engine.ensure_stroke_cover(0, 0, 2000, 2000);
+    paint_at(&mut engine, layer_id, 100.0, 100.0, 1.0, 0.0, 0.0);
+
+    let extent = engine
+        .test_last_stroke_buffer_extent()
+        .expect("stroke kept its buffer");
+    assert!(
+        !extent.contains(CanvasRect::from_xywh(0, 0, 2000, 2000)),
+        "a stray hint must not pre-size the next stroke's buffer {extent:?}"
+    );
+    assert!(
+        extent.contains(CanvasRect::from_xywh(90, 90, 20, 20)),
+        "the buffer {extent:?} must still cover the dab's neighbourhood"
+    );
+}
+
 /// Negative-direction growth on the X axis: a dab at canvas (-100, h/2)
 /// must shift the layer's `offset_x` more negative by at least one chunk
 /// (256), expand the width to cover, and preserve the original content.

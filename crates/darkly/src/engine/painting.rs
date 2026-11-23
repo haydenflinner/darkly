@@ -412,6 +412,7 @@ impl DarklyEngine {
         }
         self.commit_pending_edits();
         self.active_stroke_layer = Some(id);
+        self.pending_stroke_cover = None;
         // Freeze the suppression state for the whole gesture: a stroke
         // begun inside a window leaves no undo record even if the window
         // closes before it settles, and one begun outside keeps its
@@ -775,12 +776,24 @@ impl DarklyEngine {
     /// the stroke's coverage up front: replay posts the dab-union rect
     /// right after `begin_stroke`, so the buffer allocates at full
     /// coverage instead of regrowing per dab and leaving dead texture
-    /// generations behind wgpu's deferred free (gpu-commons-oom). A no-op
-    /// without an in-flight stroke; live drawing never sends it (a pen
-    /// cannot know its extent — the per-dab grow path stays for that).
+    /// generations behind wgpu's deferred free (gpu-commons-oom). Live
+    /// drawing never sends it (a pen cannot know its extent — the per-dab
+    /// grow path stays for that).
+    ///
+    /// The hint lands *before* the first dab, while `brush_stroke` is
+    /// still `None` (the stroke's GPU state lazy-inits on the first
+    /// `stroke_to`), so it is stashed on `pending_stroke_cover` and
+    /// `open_stroke_buffer` applies it the moment the buffer exists.
     #[handler]
     pub fn ensure_stroke_cover(&mut self, origin_x: i32, origin_y: i32, w: u32, h: u32) {
         let needed = crate::coord::CanvasRect::from_xywh(origin_x, origin_y, w, h);
+        if self.active_stroke_layer.is_none() {
+            return;
+        }
+        if self.brush_stroke.is_none() {
+            self.pending_stroke_cover = Some(needed);
+            return;
+        }
         let Some(layer_id) = self.active_stroke_layer else {
             return;
         };

@@ -172,13 +172,17 @@ impl DarklySession {
             }
         };
 
-        Ok(DarklyHandle::from_engine(DarklyEngine::new_with_tool_session(
-            gpu,
-            self.tool_session.clone(),
-            doc_width,
-            doc_height,
-            dpi,
-        )))
+        let device = gpu.shared_device();
+        Ok(DarklyHandle::from_engine(
+            DarklyEngine::new_with_tool_session(
+                gpu,
+                self.tool_session.clone(),
+                doc_width,
+                doc_height,
+                dpi,
+            ),
+            device,
+        ))
     }
 }
 
@@ -223,6 +227,9 @@ struct PendingPasteExternal {
 #[wasm_bindgen]
 pub struct DarklyHandle {
     engine: RefCell<DarklyEngine>,
+    /// This engine's device+queue, kept beside the `RefCell` so `drainQueue`
+    /// watches the queue without taking a borrow (the two-borrow-sites rule).
+    gpu: Arc<GpuDevice>,
     /// The deferred request transport (FIFO + dispatch registry). Enqueue-only
     /// from JS; drained here.
     transport: Transport,
@@ -235,9 +242,10 @@ pub struct DarklyHandle {
 }
 
 impl DarklyHandle {
-    fn from_engine(engine: DarklyEngine) -> Self {
+    fn from_engine(engine: DarklyEngine, gpu: Arc<GpuDevice>) -> Self {
         DarklyHandle {
             engine: RefCell::new(engine),
+            gpu,
             transport: Transport::new(),
             pending_images: RefCell::new(Vec::new()),
             pending_pastes: RefCell::new(Vec::new()),
@@ -323,7 +331,11 @@ impl DarklyHandle {
             )
             .await;
 
-        Ok(DarklyHandle::from_engine(DarklyEngine::standalone(gpu, doc_width, doc_height, dpi)))
+        let device = gpu.shared_device();
+        Ok(DarklyHandle::from_engine(
+            DarklyEngine::standalone(gpu, doc_width, doc_height, dpi),
+            device,
+        ))
     }
 
     // =======================================================================
@@ -417,6 +429,28 @@ impl DarklyHandle {
         set(&obj, "state", state);
         set(&obj, "results", outcomes_to_js(outcomes).into());
         obj.into()
+    }
+
+    /// An awaitable barrier on the GPU queue, for replay pacing. WebGPU
+    /// defers reclaiming a dropped texture until the queue work referencing
+    /// it retires, so a synchronous burst (a stroke replay allocating one
+    /// transient buffer set per stroke) piles every dead generation behind
+    /// a plain rAF yield — the JS side sleeps, the GPU timeline does not.
+    /// This resolves only after all work submitted so far finishes
+    /// executing, which is when those frees actually land (gpu-commons-oom).
+    /// Off-FIFO like `paste_image_external`: it watches the shared queue
+    /// rather than touching document state, so it never borrows the engine.
+    #[wasm_bindgen(js_name = drainQueue)]
+    pub fn drain_queue(&self) -> js_sys::Promise {
+        let queue = self.gpu.queue.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            let (tx, rx) = futures_channel::oneshot::channel::<()>();
+            queue.on_submitted_work_done(move || {
+                let _ = tx.send(());
+            });
+            let _ = rx.await;
+            Ok(JsValue::UNDEFINED)
+        })
     }
 
     /// Queue an `ImageBitmap` frame upload for a camera-style void. Borrows

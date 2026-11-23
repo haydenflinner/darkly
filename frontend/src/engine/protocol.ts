@@ -185,6 +185,16 @@ export class Engine {
         return status;
     }
 
+    /** Awaitable GPU-queue barrier for replay pacing: resolves once every
+     *  command buffer submitted so far finishes on the GPU timeline — the
+     *  point where deferred texture frees actually land. An rAF yield only
+     *  lets the JS side breathe; it retires nothing. Off-FIFO: resolves at
+     *  once on a closed engine rather than awaiting a dead queue forever. */
+    drainQueue(): Promise<void> {
+        if (this.closed) return Promise.resolve();
+        return this.handle.drainQueue();
+    }
+
     /** Queue an `ImageBitmap` frame upload for a camera-style void. The one
      *  engine op that can't cross the serialized protocol (an `ImageBitmap`
      *  isn't JSON) is still deferred, applied at the next drain/render. The
