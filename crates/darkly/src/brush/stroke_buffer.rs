@@ -555,7 +555,15 @@ pub(crate) fn ensure_cover(
     let new = if target.format() == wgpu::TextureFormat::R8Unorm {
         target.canvas_extent()
     } else {
-        let Some(new) = old.union(needed).intersect(target.canvas_extent()) else {
+        // Grow on the layer-growth grid: a dab that escapes the frame by
+        // a hair would otherwise reallocate the whole buffer set, so
+        // each step claims up to the next chunk line — strokes regrow
+        // at grid crossings only, never per dab.
+        let Some(new) = old
+            .union(needed)
+            .round_outward(crate::gpu::compositor::LAYER_GROWTH_CHUNK)
+            .intersect(target.canvas_extent())
+        else {
             return;
         };
         new
