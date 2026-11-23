@@ -85,6 +85,10 @@ pub(crate) struct LastStroke {
     /// their footprints' union: the undo entry's region. `None` when no dab
     /// wrote.
     footprint: Option<RegionRuns>,
+    /// `history_suppressed` as the stroke began. When set, the settle
+    /// drops the stroke without its undo capture: a replayed stroke must
+    /// not pay the readback for an entry that can never be used.
+    pub(crate) suppressed: bool,
     /// While the artist is editing it, so brush and colour changes redraw
     /// it: what Discard puts back.
     edit: Option<StrokeRevert>,
@@ -530,6 +534,7 @@ impl DarklyEngine {
             conditions,
             buffer,
             footprint,
+            suppressed: self.stroke_suppressed,
             edit: None,
         });
         self.doc.mark_changed();
@@ -547,6 +552,13 @@ impl DarklyEngine {
         };
         self.settled_stroke_seed = Some(stroke.conditions.seed);
         self.flush_pending_undo_commits();
+        // A stroke begun inside a suppression window leaves no undo
+        // record: skip the readback capture and the push, not just the
+        // push. The stroke's pixels are already committed; only the
+        // record is dropped.
+        if stroke.suppressed {
+            return;
+        }
         let Some(footprint) = stroke.footprint else {
             return;
         };

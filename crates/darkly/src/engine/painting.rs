@@ -412,6 +412,11 @@ impl DarklyEngine {
         }
         self.commit_pending_edits();
         self.active_stroke_layer = Some(id);
+        // Freeze the suppression state for the whole gesture: a stroke
+        // begun inside a window leaves no undo record even if the window
+        // closes before it settles, and one begun outside keeps its
+        // record if a window opens mid-stroke.
+        self.stroke_suppressed = self.history_suppressed;
         // Snapshot the pen-guide polylines for this gesture: the wall/snap
         // clamp tests every incoming point against them, frozen so a
         // mid-stroke object edit can't move the ruler out from under the
@@ -632,7 +637,7 @@ impl DarklyEngine {
     /// their off-canvas pixels through undo. A brush stroke keeps its own
     /// pre-stroke snapshot in its stroke buffer instead.
     fn ensure_scratch_snapshot(&mut self, layer_id: LayerId) {
-        if self.scratch_snapshot.is_some() {
+        if self.scratch_snapshot.is_some() || self.stroke_suppressed {
             return;
         }
         // Field-level borrows: `self.paint_target(...)` would borrow all of
@@ -748,6 +753,21 @@ impl DarklyEngine {
             self.grow_filter(node_id, needed)
         } else {
             self.grow_layer(node_id, needed)
+        }
+    }
+
+    /// Grow a node's pixel extent to cover a canvas-space rect, for a host
+    /// that knows a stroke set's coverage up front: a replay can pre-grow
+    /// each layer once to the union of its stored strokes, so per-dab
+    /// growth leaves no chain of dead texture generations behind. No-op
+    /// when the node already covers the rect or holds no pixels; growth
+    /// itself is document state, not an undo step, the same as
+    /// dab-driven growth. Raster and filter ids both resolve.
+    #[handler]
+    pub fn ensure_layer_extent(&mut self, id: LayerId, origin_x: i32, origin_y: i32, w: u32, h: u32) {
+        let needed = crate::coord::CanvasRect::from_xywh(origin_x, origin_y, w, h);
+        if let Some(current) = self.node_canvas_extent(id) {
+            self.ensure_layer_covers(id, current, needed);
         }
     }
 
@@ -1211,12 +1231,10 @@ impl DarklyEngine {
         color: [u8; 4],
         tolerance: u8,
     ) {
-        // The fill lands frames from now; its pre-fill snapshot travels with
-        // the readback so the stroke slot is free for whatever comes next.
-        // The fill arm's `ensure_scratch_snapshot` has always run by here.
-        let Some(snapshot) = self.scratch_snapshot.take() else {
-            return;
-        };
+        // The fill lands frames from now; its pre-fill snapshot (when the
+        // stroke records undo — `None` under suppression) travels with the
+        // readback so the stroke slot is free for whatever comes next.
+        let snapshot = self.scratch_snapshot.take();
         let pt = match self.paint_target(layer_id) {
             Some(t) => t,
             None => return,
@@ -1255,7 +1273,7 @@ impl DarklyEngine {
         color: [u8; 4],
         tolerance: u8,
         extent: layer_readback::LayerReadbackExtent,
-        snapshot: Snapshot,
+        snapshot: Option<Snapshot>,
         pixels: Vec<u8>,
     ) {
         let fill_mask = extent.flood_fill_to_canvas_mask(&pixels, seed_canvas, tolerance);
@@ -1310,8 +1328,11 @@ impl DarklyEngine {
 
         // 4. Queue the undo diff against the pre-fill snapshot: the entry
         //    covers the tiles the fill changed, and none when it changed
-        //    nothing.
-        self.queue_undo_diff(layer_id, snapshot);
+        //    nothing. A suppressed stroke carried no snapshot — the fill
+        //    lands but leaves no undo record.
+        if let Some(snapshot) = snapshot {
+            self.queue_undo_diff(layer_id, snapshot);
+        }
 
         self.compositor.mark_node_pixels_dirty(layer_id);
     }

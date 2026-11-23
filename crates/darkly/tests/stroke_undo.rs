@@ -197,3 +197,37 @@ fn a_stroke_is_unsaved_from_pen_up_until_saved() {
         "settling a saved stroke changes nothing unsaved"
     );
 }
+
+/// A stroke begun inside a `suppress_history` window commits its pixels
+/// but leaves no undo entry at all — neither the readback capture nor
+/// the push. Replays re-stroke persisted ink through the real pipeline,
+/// and a per-stroke undo entry is a stack the replay can never use, so
+/// the capture is pure cost (readback + staging textures per stroke).
+#[test]
+fn a_stroke_under_history_suppression_records_no_undo() {
+    let mut engine = new_engine((96, 96), "Ink Pen", 0.0);
+    let layer = engine.add_raster_layer(None);
+    engine.commit_pending_edits();
+    let steps = engine.test_undo_len();
+    let ops: Vec<_> = (0..8)
+        .map(|i| event(10.0 + i as f32 * 8.0, 48.0, i as f64 * 8.0))
+        .collect();
+
+    engine.suppress_history(true);
+    headless(&mut engine, layer, &ops);
+    // Pending-but-suppressed must not even count toward history_status.
+    assert_eq!(engine.history_status().undo, steps);
+    engine.commit_pending_edits();
+    engine.suppress_history(false);
+
+    assert_eq!(
+        engine.test_undo_len(),
+        steps,
+        "the suppressed stroke settled without an undo entry"
+    );
+
+    // Control: the same stroke outside the window records normally.
+    headless(&mut engine, layer, &ops);
+    engine.commit_pending_edits();
+    assert_eq!(engine.test_undo_len(), steps + 1);
+}

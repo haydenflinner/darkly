@@ -172,8 +172,11 @@ pub(crate) enum ReadbackContext {
         /// window-local R8 buffer. See
         /// `crate::gpu::layer_readback::LayerReadbackExtent`.
         extent: crate::gpu::layer_readback::LayerReadbackExtent,
-        /// The target's pre-fill pixels, diffed for undo once the fill lands.
-        snapshot: crate::gpu::region_store::Snapshot,
+        /// The target's pre-fill pixels, diffed for undo once the fill
+        /// lands. `None` when the fill's stroke began inside a history
+        /// suppression window: the fill still lands, it just leaves no
+        /// undo record.
+        snapshot: Option<crate::gpu::region_store::Snapshot>,
     },
     ColorPick,
     Copy {
@@ -482,6 +485,12 @@ pub struct DarklyEngine {
     /// to drive view-sync (onion-skin ghosts, frame visibility) without
     /// polluting artist history. Toggled by `suppress_history`.
     pub(crate) history_suppressed: bool,
+    /// The in-flight stroke's undo flag, copied from `history_suppressed`
+    /// at `begin_stroke`: a stroke begun inside a suppression window
+    /// leaves no undo record at all — its settle skips the pixel
+    /// capture, and its gradient/fill ops skip the pre-op snapshot the
+    /// undo diff would have needed.
+    pub(crate) stroke_suppressed: bool,
     pub(crate) active_stroke_layer: Option<LayerId>,
     /// The shape a drag is placing: a document layer with no undo record
     /// until the drag commits it. A pending edit, resolved by
@@ -892,6 +901,7 @@ impl DarklyEngine {
             fonts: crate::text::FontRegistry::new(),
             undo_stack,
             history_suppressed: false,
+            stroke_suppressed: false,
             active_stroke_layer: None,
             shape_placement: None,
             isolated_node: None,
