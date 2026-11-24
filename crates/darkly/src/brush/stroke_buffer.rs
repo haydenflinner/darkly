@@ -20,6 +20,7 @@ use crate::gpu::paint_target::GpuPaintTarget;
 use crate::gpu::readback::ReadbackRequest;
 use crate::gpu::region_runs::RegionRuns;
 use crate::gpu::region_store::{RegionScratch, UndoRegionEntry};
+use crate::gpu::retire::OwnedTexture;
 use crate::layer::LayerId;
 
 /// A frozen texture for the brush program's sampled source slot
@@ -30,7 +31,7 @@ use crate::layer::LayerId;
 /// slot instead. Always RGBA8 (R8 mask sources broadcast during capture,
 /// sharing `save_pre_stroke_snapshot`'s format handling).
 pub struct SourceSnapshot {
-    texture: wgpu::Texture,
+    texture: OwnedTexture,
     /// Plane-space rect the snapshot covers: the *sampled* texture's
     /// frame, which the shader needs to map plane positions to snapshot
     /// UVs. Frozen with the pixels: destination-layer growth mid-stroke
@@ -50,7 +51,7 @@ pub struct SourceSnapshot {
 /// the stroke opened, over the buffer's frame. Always `Rgba8Unorm` (an
 /// R8 mask target is broadcast into it at capture).
 pub struct PreStroke {
-    texture: wgpu::Texture,
+    texture: OwnedTexture,
     view: wgpu::TextureView,
     /// Bind group over `texture`, compatible with the canvas copy BGL so
     /// the composite pipeline can read it as the background.
@@ -131,8 +132,8 @@ impl PreStroke {
     }
 }
 
-fn pre_stroke_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
+fn pre_stroke_texture(device: &wgpu::Device, width: u32, height: u32) -> OwnedTexture {
+    OwnedTexture::new(device.create_texture(&wgpu::TextureDescriptor {
         label: Some("pre-stroke-snapshot"),
         size: wgpu::Extent3d {
             width,
@@ -151,7 +152,7 @@ fn pre_stroke_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::T
             | wgpu::TextureUsages::COPY_DST
             | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
-    })
+    }))
 }
 
 pub struct StrokeBuffer {
@@ -176,7 +177,7 @@ pub struct StrokeBuffer {
     /// could host both a merged live sampler and a differently-pinned
     /// snapshot sampler. Canvas-window-sized, RGBA8, like the source
     /// snapshot's merged arm produces.
-    merged_base: Option<wgpu::Texture>,
+    merged_base: Option<OwnedTexture>,
 
     /// How the stroke's terminal dispatches dabs; with the scratch's format,
     /// what decides whether a scratch suits a given brush.
@@ -296,8 +297,8 @@ impl StrokeBuffer {
         (
             &mut self.scratch,
             &mut self.pre_stroke,
-            self.source_snapshot.as_ref().map(|cs| &cs.texture),
-            self.merged_base.as_ref(),
+            self.source_snapshot.as_ref().map(|cs| &*cs.texture),
+            self.merged_base.as_deref(),
         )
     }
 
@@ -647,7 +648,7 @@ fn freeze_source(
     encoder: &mut wgpu::CommandEncoder,
     brush_pipelines: &BrushPipelines,
     source: &GpuPaintTarget<'_>,
-) -> wgpu::Texture {
+) -> OwnedTexture {
     use crate::brush::paint_target_ext::BrushPaintTargetExt;
     let extent = source.layer_extent();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -680,5 +681,5 @@ fn freeze_source(
         &texture,
         source.canvas_extent(),
     );
-    texture
+    OwnedTexture::new(texture)
 }

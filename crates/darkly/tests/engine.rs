@@ -1235,6 +1235,74 @@ fn dab_bounded_buffer_covers_only_stroke_coverage() {
     assert!(hit, "the dab's paint should land at (100, 100)");
 }
 
+/// The web path of `gpu::retire`: every texture a stroke drops (a grown
+/// scratch's old generation, the stroke buffer at settle, a thumbnail's
+/// staging buffer) is destroyed between engine calls, as the wasm handle
+/// does after each drain and frame. wgpu validation panics if a
+/// destroyed resource reaches a later submit, and the pixels must match
+/// an engine that only drops.
+// r[verify ink.replay.frees]
+#[test]
+fn destroying_retired_stroke_resources_keeps_the_pixels() {
+    use darkly::gpu::retire;
+
+    fn run(deferred: bool) -> (Vec<u8>, usize) {
+        retire::set_deferred(deferred);
+        let mut destroyed = 0;
+        let mut engine = test_engine(2048, 2048);
+        let layer_id = engine.add_raster_layer(None);
+        let mut flush = |engine: &mut DarklyEngine| {
+            let _ = engine;
+            destroyed += retire::destroy_retired();
+        };
+        // A long stroke: its buffer opens at the first dab and regrows
+        // across the chunk grid, retiring a generation each time.
+        for (i, (r, g)) in [(1.0, 0.0), (0.0, 1.0), (0.2, 0.4)].into_iter().enumerate() {
+            engine.set_foreground_color([r, g, 0.3, 1.0]);
+            engine.begin_stroke(layer_id).unwrap();
+            if i == 2 {
+                // A replayed stroke posts its coverage before any dab.
+                engine.ensure_stroke_cover(0, 0, 1900, 1900);
+            }
+            for step in 0..40 {
+                let t = step as f32 / 39.0;
+                engine.stroke_to(StrokeOp::BrushStroke {
+                    x: 80.0 + t * 1700.0,
+                    y: 120.0 + i as f32 * 400.0 + t * 900.0,
+                    pressure: 1.0,
+                    x_tilt: 0.0,
+                    y_tilt: 0.0,
+                    rotation: 0.0,
+                    tangential_pressure: 0.0,
+                    time_ms: step as f64 * 16.0,
+                });
+                flush(&mut engine);
+            }
+            engine.end_stroke();
+            flush(&mut engine);
+            engine.render(0.0);
+            flush(&mut engine);
+        }
+        let pixels = engine.test_readback_layer(layer_id);
+        flush(&mut engine);
+        retire::set_deferred(false);
+        (pixels, destroyed)
+    }
+
+    let (dropped, none) = run(false);
+    assert_eq!(none, 0, "a native engine drops at once and retires nothing");
+    let (destroyed_px, destroyed) = run(true);
+    assert!(
+        destroyed > 0,
+        "the strokes must retire resources for the host to destroy"
+    );
+    assert!(dropped.iter().any(|&b| b != 0), "the strokes must paint");
+    assert!(
+        dropped == destroyed_px,
+        "destroying retired resources must not change the pixels"
+    );
+}
+
 /// Replay's coverage hint lands between `begin_stroke` and the first dab,
 /// while the stroke's GPU state is still `None` (lazy init on the first
 /// `stroke_to`). The hint is stashed and `open_stroke_buffer` applies it

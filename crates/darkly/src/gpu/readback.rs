@@ -35,12 +35,32 @@ pub const MAX_EXTRACT_BYTES_PER_POLL: usize = 64 << 20;
 // ReadbackRequest - a single pending GPU→CPU copy
 // ---------------------------------------------------------------------------
 
+/// The staging buffer a request maps. A request that allocated it owns it,
+/// and dropping the request retires the buffer for an explicit destroy (on
+/// the web a dropped buffer otherwise lives until JS GC: see
+/// [`crate::gpu::retire`]). The undo path shares its buffer with the
+/// pending entry, so that request holds a plain handle.
+enum ReadbackBuffer {
+    Owned(crate::gpu::retire::OwnedBuffer),
+    Shared(wgpu::Buffer),
+}
+
+impl std::ops::Deref for ReadbackBuffer {
+    type Target = wgpu::Buffer;
+    fn deref(&self) -> &wgpu::Buffer {
+        match self {
+            ReadbackBuffer::Owned(b) => b,
+            ReadbackBuffer::Shared(b) => b,
+        }
+    }
+}
+
 /// A pending GPU→CPU readback.
 ///
 /// Created by [`request_readback`], which encodes the copy command.
 /// Submitted to a [`ReadbackScheduler`] via [`submit`](ReadbackScheduler::submit).
 pub struct ReadbackRequest {
-    buffer: wgpu::Buffer,
+    buffer: ReadbackBuffer,
     height: u32,
     padded_row_bytes: u32,
     unpadded_row_bytes: u32,
@@ -112,7 +132,7 @@ pub fn request_readback(
     );
 
     ReadbackRequest {
-        buffer,
+        buffer: ReadbackBuffer::Owned(buffer.into()),
         height: h,
         padded_row_bytes,
         unpadded_row_bytes,
@@ -179,7 +199,7 @@ pub fn request_readback_rows(
     }
 
     ReadbackRequest {
-        buffer,
+        buffer: ReadbackBuffer::Owned(buffer.into()),
         height: rows,
         padded_row_bytes,
         unpadded_row_bytes,
@@ -201,7 +221,7 @@ impl ReadbackRequest {
         // verbatim.
         let len = u32::try_from(buffer.size()).expect("undo region buffer exceeds 4 GiB");
         ReadbackRequest {
-            buffer,
+            buffer: ReadbackBuffer::Shared(buffer),
             height: 1,
             padded_row_bytes: len,
             unpadded_row_bytes: len,

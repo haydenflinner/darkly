@@ -181,6 +181,7 @@ pub mod reduction;
 pub mod region_runs;
 pub mod region_store;
 pub mod rescale;
+pub mod retire;
 pub mod revisions;
 pub mod screen_run;
 pub mod selection;

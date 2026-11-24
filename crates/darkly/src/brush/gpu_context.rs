@@ -508,7 +508,11 @@ impl<'a> StrokeResources<'a> {
     /// The scratch's channel textures in declaration order, as the
     /// checkpoint ring takes them alongside [`Self::scratch_frame`].
     pub fn channel_textures(&self) -> Vec<&wgpu::Texture> {
-        self.scratch.channel_textures().iter().collect()
+        self.scratch
+            .channel_textures()
+            .iter()
+            .map(|t| &**t)
+            .collect()
     }
 }
 

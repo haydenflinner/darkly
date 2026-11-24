@@ -363,7 +363,14 @@ impl DarklyHandle {
                 return busy_result();
             };
             self.apply_pending_images(&mut e);
-            DrainOutcome::Drained(self.transport.drain_with(&mut e))
+            let outcomes = self.transport.drain_with(&mut e);
+            // Every request's encoders are submitted by now: free what
+            // they retired (a dropped stroke buffer, a read staging
+            // buffer). Without this, the web keeps each dead texture
+            // until JS GC (gpu-commons-oom).
+            // r[impl ink.replay.frees]
+            darkly::gpu::retire::destroy_retired();
+            DrainOutcome::Drained(outcomes)
         };
         match outcome {
             DrainOutcome::Busy => busy_result(),
@@ -393,6 +400,9 @@ impl DarklyHandle {
 
         let render_start = web_time::Instant::now();
         let needs_more = e.render(time_secs);
+        // The frame and the drained requests are submitted: free what
+        // they retired, as `drain` does.
+        darkly::gpu::retire::destroy_retired();
         let render_us = render_start.elapsed().as_micros() as u64;
 
         let frame_us = frame_start.elapsed().as_micros() as u64;

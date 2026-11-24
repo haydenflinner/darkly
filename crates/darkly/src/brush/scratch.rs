@@ -56,6 +56,7 @@ use crate::brush::node::DabPass;
 use crate::brush::pipeline::CanvasCopyLayouts;
 use crate::brush::texture_source::LiveSource;
 use crate::coord::{CanvasRect, LayerRect};
+use crate::gpu::retire::OwnedTexture;
 
 /// Per-dab read-mirror initial size.  1×1 is the smallest legal wgpu
 /// texture; the first dab's footprint will lazy-grow it.  Picking a small
@@ -65,7 +66,7 @@ const READ_MIRROR_INITIAL_DIM: u32 = 1;
 
 pub struct Scratch {
     // --- Write side (buffer-framed) ---
-    write_texture: wgpu::Texture,
+    write_texture: OwnedTexture,
     write_view: wgpu::TextureView,
     /// Bind group over `write_texture` using the canvas-copy BGL:
     /// paint terminals' `commit_brush_dab` bind this as the composite
@@ -81,7 +82,7 @@ pub struct Scratch {
     origin: [i32; 2],
 
     // --- Read mirror (footprint-sized, lazy-grown) ---
-    read_mirror_texture: wgpu::Texture,
+    read_mirror_texture: OwnedTexture,
     read_mirror_view: wgpu::TextureView,
     /// Bind group over `read_mirror_texture` using the canvas-copy BGL:
     /// the per-dab composite shaders (`composite.wgsl`, blur,
@@ -149,7 +150,7 @@ pub struct Scratch {
     /// dab's dispatch. Derived: never cleared, checkpointed or restored,
     /// because every texel a dab reads was rewritten for that dab. Empty
     /// until a brush asks.
-    appearance: std::collections::HashMap<LiveSource, (wgpu::Texture, wgpu::TextureView)>,
+    appearance: std::collections::HashMap<LiveSource, (OwnedTexture, wgpu::TextureView)>,
 }
 
 /// Texel format of the appearance mirror: straight RGBA8, write-only
@@ -225,7 +226,7 @@ impl StrokeChannel {
 /// no mirror.
 struct StrokeChannels {
     declared: Vec<StrokeChannel>,
-    textures: Vec<wgpu::Texture>,
+    textures: Vec<OwnedTexture>,
     /// Attachment views, in declaration order: what the terminal hangs
     /// off its render pass after [`Scratch::write_view`].
     views: Vec<wgpu::TextureView>,
@@ -445,7 +446,7 @@ impl Scratch {
     /// The checkpoint ring snapshots these alongside the write side: a
     /// rewind that restores the scratch but not the channels replays the
     /// post-checkpoint dabs onto a channel that already counted them.
-    pub fn channel_textures(&self) -> &[wgpu::Texture] {
+    pub fn channel_textures(&self) -> &[OwnedTexture] {
         self.channels.as_ref().map_or(&[], |c| &c.textures)
     }
 
@@ -858,7 +859,7 @@ fn build_channels(
             Some(sampler),
         ));
         views.push(view);
-        textures.push(texture);
+        textures.push(OwnedTexture::new(texture));
     }
 
     StrokeChannels {
@@ -904,7 +905,7 @@ fn create_write_texture(
     height: u32,
     format: wgpu::TextureFormat,
     pass: DabPass,
-) -> (wgpu::Texture, wgpu::TextureView) {
+) -> (OwnedTexture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("scratch-write"),
         size: wgpu::Extent3d {
@@ -924,14 +925,14 @@ fn create_write_texture(
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    (texture, view)
+    (OwnedTexture::new(texture), view)
 }
 
 fn create_appearance_texture(
     device: &wgpu::Device,
     width: u32,
     height: u32,
-) -> (wgpu::Texture, wgpu::TextureView) {
+) -> (OwnedTexture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("scratch-appearance"),
         size: wgpu::Extent3d {
@@ -947,7 +948,7 @@ fn create_appearance_texture(
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    (texture, view)
+    (OwnedTexture::new(texture), view)
 }
 
 fn create_read_mirror_texture(
@@ -955,7 +956,7 @@ fn create_read_mirror_texture(
     width: u32,
     height: u32,
     format: wgpu::TextureFormat,
-) -> (wgpu::Texture, wgpu::TextureView) {
+) -> (OwnedTexture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("scratch-read-mirror"),
         size: wgpu::Extent3d {
@@ -971,7 +972,7 @@ fn create_read_mirror_texture(
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    (texture, view)
+    (OwnedTexture::new(texture), view)
 }
 
 #[cfg(test)]
@@ -1072,7 +1073,7 @@ mod tests {
         let (w, h) = scratch.write_dimensions();
         let pattern: Vec<u8> = (0..(w * h * 4)).map(|i| (i % 253) as u8 + 1).collect();
         let textures: Vec<&wgpu::Texture> = std::iter::once(scratch.write_texture())
-            .chain(scratch.channel_textures())
+            .chain(scratch.channel_textures().iter().map(|t| &**t))
             .collect();
         assert_eq!(textures.len(), 2);
         for texture in &textures {
